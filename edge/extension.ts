@@ -187,7 +187,7 @@ function createReports(packageJsonPathList: Array<string>, cancellationToken: vs
             return
         }
 
-        const expectedDependencies = _.chain(require(packageJsonPath))
+        const expectedDependencies = _.chain(readFile(packageJsonPath) as object)
             .pick(['dependencies', 'devDependencies', 'peerDependencies']) // TODO: add 'bundledDependencies'
             .values()
             .map(item => _.toPairs<string>(item))
@@ -254,19 +254,14 @@ function getDependenciesFromPackageLock(packageJsonPath: string, expectedDepende
         return null
     }
 
-    const depsData = require(packageLockPath) as { dependencies: { [key: string]: { version: string } } }
-    const depsHash = _.mapValues(depsData.dependencies, item => item.version)
+    const depsData = _.get(readFile(packageLockPath), 'dependencies', {}) as { [key: string]: { version: string } }
+    const depsHash = _.mapValues(depsData, item => item.version)
 
     return expectedDependencies.map(([name, expectedVersion]) => {
         const lockedVersion = depsHash[name]
 
-        let actualVersion: string
         const modulePath = fp.join(fp.dirname(packageJsonPath), 'node_modules', name, 'package.json')
-        try {
-            actualVersion = require(modulePath).version
-        } catch (error) {
-            // Do nothing
-        }
+        const actualVersion = _.get(readFile(modulePath), 'version') as string
 
         return { name, expectedVersion, lockedVersion, actualVersion }
     })
@@ -283,8 +278,8 @@ function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependenci
         return null
     }
 
-    const depsData = yarn.parse(fs.readFileSync(yarnLockPath, 'utf-8')) as { object: { [key: string]: { version: string } } }
-    const depsHash = _.mapValues(depsData.object, item => item.version)
+    const depsData = _.get(readFile(yarnLockPath), 'object', {}) as { [key: string]: { version: string } }
+    const depsHash = _.mapValues(depsData, item => item.version)
 
     return expectedDependencies.map(([name, expectedVersion]) => {
         const lockedVersion = (
@@ -292,17 +287,12 @@ function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependenci
             _.findLast(depsHash, (version, nameAtVersion) => nameAtVersion.startsWith(name + '@'))
         )
 
-        let actualVersion: string
         const modulePath = findName(
             fp.dirname(packageJsonPath),
             fp.join('node_modules', name, 'package.json'),
             fp.dirname(yarnLockPath)
         )
-        try {
-            actualVersion = require(modulePath).version
-        } catch (error) {
-            // Do nothing
-        }
+        const actualVersion = _.get(readFile(modulePath), 'version') as string
 
         return { name, expectedVersion, lockedVersion, actualVersion }
     })
@@ -314,7 +304,7 @@ function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string) {
     }
 
     // See https://yarnpkg.com/lang/en/docs/workspaces/
-    const packageJsonForYarnWorkspace = require(fp.join(fp.dirname(yarnLockPath), 'package.json')) as { private?: boolean, workspaces?: Array<string> }
+    const packageJsonForYarnWorkspace = readFile(fp.join(fp.dirname(yarnLockPath), 'package.json')) as { private?: boolean, workspaces?: Array<string> }
     if (packageJsonForYarnWorkspace.private !== true || !packageJsonForYarnWorkspace.workspaces) {
         return false
     }
@@ -342,6 +332,21 @@ function findName(path: string, name: string, stop?: string) {
             return workPath
         }
         pathList.pop()
+    }
+}
+
+function readFile(filePath: string): object | string {
+    try {
+        const text = fs.readFileSync(filePath, 'utf-8')
+        if (fp.extname(filePath) === '.json') {
+            return JSON.parse(text)
+        } else if (fp.basename(filePath) === 'yarn.lock') {
+            return yarn.parse(text)
+        }
+        return text
+
+    } catch (error) {
+        return null
     }
 }
 
