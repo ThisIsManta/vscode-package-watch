@@ -70,7 +70,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         const success = await checkDependencies(await getPackageJsonPathList(), token)
         if (success) {
-            vscode.window.showInformationMessage('The node dependencies are updated.')
+            vscode.window.showInformationMessage('The node dependencies are in-sync.')
         }
 
         pendingOperation = null
@@ -142,13 +142,13 @@ async function checkDependencies(packageJsonPathList: Array<string>, token: vsco
         .map(report => report.problems)
         .flatten()
         .value()
-    let message = 'One or more node package dependencies were outdated.'
+    let message = 'One or more node dependencies were outdated.'
     let forceChecking = true
     if (problems.every(problem => problem === 'The lock file was missing.' || problem.includes('was not installed.'))) {
-        message = 'One or more node package dependencies needed to be installed.'
+        message = 'One or more node dependencies needed to be installed.'
         forceChecking = false
     } else if (problems.some(problem => problem.includes('was not found in /node_module/ directory.'))) {
-        message = 'One or more node package dependencies were missing from /node_module/ directory.'
+        message = 'One or more node dependencies were missing from /node_module/ directory.'
     }
 
     const selectOption = await vscode.window.showWarningMessage(
@@ -360,7 +360,7 @@ async function installDependencies(packageJsonPathList: Array<string>, options: 
         return
     }
 
-    const abort = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing dependencies...', cancellable: true }, async (progress, progressToken) => {
+    const abort = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing node dependencies...', cancellable: true }, async (progress, progressToken) => {
         progressToken.onCancellationRequested(() => {
             if (token === pendingOperation.token) {
                 pendingOperation.cancel()
