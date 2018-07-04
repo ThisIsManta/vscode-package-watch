@@ -1,7 +1,7 @@
 {
     "name": "package-watch",
     "displayName": "Manta's Package Watch",
-    "description": "Keep your node dependencies fresh.",
+    "description": "Keep your node dependencies in-sync with the lock file.",
     "version": "0.0.0",
     "publisher": "thisismanta",
     "categories": [
@@ -19,11 +19,6 @@
     },
     "bugs": {
         "url": "https://github.com/ThisIsManta/vscode-package-watch/issues"
-    },
-    "icon": "docs/logo.png",
-    "galleryBanner": {
-        "color": "#212121",
-        "theme": "dark"
     },
     "engines": {
         "vscode": "^1.22.0"

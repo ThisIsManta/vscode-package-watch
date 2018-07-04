@@ -53,8 +53,7 @@ export async function activate(context: vscode.ExtensionContext) {
         } else if (fp.basename(link.fsPath) === 'package-lock.json') {
             batch(fp.join(fp.basename(link.fsPath), 'package.json'))
 
-        } else {
-            // TODO: use Yarn Workspace
+        } else { // In case of 'yarn.lock'
             batch(await getPackageJsonPathList())
         }
     }))
