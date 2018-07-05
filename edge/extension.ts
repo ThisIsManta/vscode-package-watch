@@ -412,26 +412,51 @@ async function installDependencies(packageJsonPathList: Array<string>, options: 
             .sortBy(({ directory }) => directory.length)
             .value()
 
+        const progressWidth = 100 / commands.length
+
         for (const { command, parameters, directory, packageJsonPath } of commands) {
             if (token.isCancellationRequested) {
                 return
             }
 
+
             outputChannel.appendLine('')
             outputChannel.appendLine(packageJsonPath.replace(/\\/g, '/'))
+
+            let nowStep = 0
+            let maxStep = 1
 
             const exitCode = await new Promise<number>(resolve => {
                 const worker = cp.spawn(command, parameters, { cwd: directory, shell: true })
                 worker.stdout.on('data', text => {
                     outputChannel.append('  ' + text)
+
+                    if (command === 'yarn install') {
+                        const steps = text.toString().match(/^\[(\d)\/(\d)\]\s/)
+                        if (steps) {
+                            maxStep = +steps[2]
+                            progress.report({ increment: Math.floor((+steps[1] - nowStep) / maxStep * progressWidth) })
+                            nowStep = +steps[1]
+                        }
+                    }
                 })
                 worker.stderr.on('data', text => {
                     outputChannel.append('  ' + text)
                 })
                 worker.on('exit', code => {
+                    progress.report({ increment: Math.floor((maxStep - nowStep) / maxStep * progressWidth) })
+
                     resolve(code)
                 })
+
+                token.onCancellationRequested(() => {
+                    worker.kill()
+                })
             })
+
+            if (token.isCancellationRequested) {
+                return
+            }
 
             if (exitCode !== 0) {
                 const selectOption = await vscode.window.showErrorMessage(
