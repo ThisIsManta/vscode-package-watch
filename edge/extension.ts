@@ -72,27 +72,12 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.window.showInformationMessage('The node dependencies are in-sync.')
         }
 
-        pendingOperation = null
+        if (token === pendingOperation.token) {
+            pendingOperation = null
+        }
     }))
 
-    context.subscriptions.push(vscode.commands.registerCommand('packageWatch.installDependencies', async (packageJsonPathList: Array<string>) => {
-        if (pendingOperation) {
-            vscode.window.showInformationMessage('The dependency checking/installation is in progress.', { modal: true })
-            return
-        }
-        pendingOperation = new vscode.CancellationTokenSource()
-        const token = pendingOperation.token
-
-        outputChannel.clear()
-
-        await installDependencies(packageJsonPathList, { forceChecking: true }, token)
-
-        if (token.isCancellationRequested) {
-            return
-        }
-
-        pendingOperation = null
-    }))
+    context.subscriptions.push(vscode.commands.registerCommand('packageWatch.installDependencies', installDependencies))
 
     batch(await getPackageJsonPathList())
 }
@@ -142,29 +127,25 @@ async function checkDependencies(packageJsonPathList: Array<string>, token: vsco
         .flatten()
         .some(problem => problem.forceChecking)
         .value()
-    const selectOption = await vscode.window.showWarningMessage(
+    vscode.window.showWarningMessage(
         'One or more node dependencies were outdated.',
         {
             title: 'Install Dependencies',
-            action: () => installDependencies(reports.map(report => report.packageJsonPath), { forceChecking }, token)
+            action: () => {
+                installDependencies(reports, { forceChecking })
+            }
         },
         {
             title: 'Show Problems',
-            action: () => { outputChannel.show() }
+            action: () => {
+                outputChannel.show()
+            }
         }
-    )
-
-    if (token.isCancellationRequested) {
-        return
-    }
-
-    if (selectOption) {
-        await selectOption.action()
-    }
-
-    if (token.isCancellationRequested) {
-        return
-    }
+    ).then(selectOption => {
+        if (selectOption) {
+            selectOption.action()
+        }
+    })
 }
 
 function createReports(packageJsonPathList: Array<string>, cancellationToken: vscode.CancellationToken): Array<Report> {
@@ -341,7 +322,15 @@ function readFile(filePath: string): object | string {
     }
 }
 
-async function installDependencies(packageJsonPathList: Array<string>, options: { forceChecking?: boolean, forceDownloading?: boolean }, token: vscode.CancellationToken) {
+async function installDependencies(reports: Array<Report> = [], options: { forceChecking?: boolean, forceDownloading?: boolean } = {}) {
+    if (pendingOperation) {
+        pendingOperation.cancel()
+    }
+    pendingOperation = new vscode.CancellationTokenSource()
+    const token = pendingOperation.token
+
+    outputChannel.clear()
+
     if (token.isCancellationRequested) {
         return
     }
@@ -351,7 +340,20 @@ async function installDependencies(packageJsonPathList: Array<string>, options: 
         return
     }
 
-    const abort = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing node dependencies...', cancellable: true }, async (progress, progressToken) => {
+    const packageJsonPathList = reports.length === 0
+        ? reports.map(report => report.packageJsonPath)
+        : await getPackageJsonPathList()
+
+    if (token.isCancellationRequested) {
+        return
+    }
+
+    if (packageJsonPathList.length === 0) {
+        vscode.window.showErrorMessage('No "package.json" found.', { modal: true })
+        return true
+    }
+
+    const success = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing node dependencies...', cancellable: true }, async (progress, progressToken) => {
         progressToken.onCancellationRequested(() => {
             if (token === pendingOperation.token) {
                 pendingOperation.cancel()
@@ -359,21 +361,10 @@ async function installDependencies(packageJsonPathList: Array<string>, options: 
             }
         })
 
-        packageJsonPathList = packageJsonPathList || await getPackageJsonPathList()
-
-        if (token.isCancellationRequested) {
-            return
-        }
-
-        if (packageJsonPathList.length === 0) {
-            vscode.window.showErrorMessage('No "package.json" found.', { modal: true })
-            return true
-        }
-
         const commands = _.chain(packageJsonPathList)
             .map(packageJsonPath => {
                 if (token.isCancellationRequested) {
-                    return null
+                    return
                 }
 
                 const yarnLockPath = findName(fp.dirname(packageJsonPath), 'yarn.lock')
@@ -410,7 +401,6 @@ async function installDependencies(packageJsonPathList: Array<string>, options: 
             if (token.isCancellationRequested) {
                 return
             }
-
 
             outputChannel.appendLine('')
             outputChannel.appendLine(packageJsonPath.replace(/\\/g, '/'))
@@ -451,19 +441,22 @@ async function installDependencies(packageJsonPathList: Array<string>, options: 
             }
 
             if (exitCode !== 0) {
-                const selectOption = await vscode.window.showErrorMessage(
+                vscode.window.showErrorMessage(
                     `There was an error running "${command}".`,
                     { title: 'Show Errors', action: () => { outputChannel.show() } }
-                )
-                if (selectOption) {
-                    selectOption.action()
-                }
-                return true
+                ).then(selectOption => {
+                    if (selectOption) {
+                        selectOption.action()
+                    }
+                })
+                return
             }
         }
+
+        return true
     })
 
-    if (abort) {
+    if (!success) {
         return
     }
 
@@ -475,25 +468,36 @@ async function installDependencies(packageJsonPathList: Array<string>, options: 
         return
     }
 
-    const reports = await createReports(packageJsonPathList, token)
-    printReports(reports, token)
-    if (reports.length > 0) {
-        const selectOption = await vscode.window.showWarningMessage(
-            'There were still some problems regarding the node dependencies.',
-            {
-                title: 'Reinstall Dependencies',
-                action: () => installDependencies(reports.map(report => report.packageJsonPath), { forceChecking: true, forceDownloading: true }, token)
-            },
-            {
-                title: 'Show Problems',
-                action: () => { outputChannel.show() }
-            },
-        )
-        if (selectOption) {
-            await selectOption.action()
-        }
+    {
+        const reports = await createReports(packageJsonPathList, token)
+        printReports(reports, token)
+        if (reports.length > 0) {
+            vscode.window.showWarningMessage(
+                'There were still some problems regarding the node dependencies.',
+                {
+                    title: 'Reinstall Dependencies',
+                    action: () => {
+                        installDependencies(reports, { forceChecking: true, forceDownloading: true })
+                    }
+                },
+                {
+                    title: 'Show Problems',
+                    action: () => {
+                        outputChannel.show()
+                    }
+                },
+            ).then(selectOption => {
+                if (selectOption) {
+                    selectOption.action()
+                }
+            })
 
-    } else {
-        vscode.window.showInformationMessage('The node dependencies are installed successfully.')
+        } else {
+            vscode.window.showInformationMessage('The node dependencies are installed successfully.')
+        }
+    }
+
+    if (token === pendingOperation.token) {
+        pendingOperation = null
     }
 }
