@@ -11,6 +11,9 @@ let fileWatcher: vscode.FileSystemWatcher
 let outputChannel: vscode.OutputChannel
 let pendingOperation: vscode.CancellationTokenSource
 
+class CheckingOperation extends vscode.CancellationTokenSource { }
+class InstallationOperation extends vscode.CancellationTokenSource { }
+
 export async function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('Package Watch')
 
@@ -19,22 +22,37 @@ export async function activate(context: vscode.ExtensionContext) {
         if (pendingOperation) {
             return
         }
-        pendingOperation = new vscode.CancellationTokenSource()
+        pendingOperation = new CheckingOperation()
         const token = pendingOperation.token
+
+        if (queue.length === 0) {
+            return
+        }
 
         const packageJsonPathList = _.uniq(queue)
         queue.splice(0, queue.length)
 
         await checkDependencies(packageJsonPathList, token)
 
+        if (token === pendingOperation.token) {
             pendingOperation = null
+        }
+
+        if (queue.length > 0) {
+            defer()
+        }
     }, 300)
     const batch = (path: string | Array<string>) => {
+        if (pendingOperation instanceof InstallationOperation) {
+            return
+        }
+
         if (typeof path === 'string') {
             queue.push(path)
         } else {
             queue.push(...path)
         }
+
         defer()
     }
 
@@ -62,7 +80,7 @@ export async function activate(context: vscode.ExtensionContext) {
         if (pendingOperation) {
             pendingOperation.cancel()
         }
-        pendingOperation = new vscode.CancellationTokenSource()
+        pendingOperation = new CheckingOperation()
         const token = pendingOperation.token
 
         outputChannel.clear()
@@ -323,10 +341,12 @@ function readFile(filePath: string): object | string {
 }
 
 async function installDependencies(reports: Array<Report> = [], options: { forceChecking?: boolean, forceDownloading?: boolean } = {}) {
-    if (pendingOperation) {
+    if (pendingOperation instanceof CheckingOperation) {
         pendingOperation.cancel()
+    } else if (pendingOperation instanceof InstallationOperation) {
+        return
     }
-    pendingOperation = new vscode.CancellationTokenSource()
+    pendingOperation = new InstallationOperation()
     const token = pendingOperation.token
 
     outputChannel.clear()
@@ -449,6 +469,9 @@ async function installDependencies(reports: Array<Report> = [], options: { force
                         selectOption.action()
                     }
                 })
+                if (token === pendingOperation.token) {
+                    pendingOperation = null
+                }
                 return
             }
         }
