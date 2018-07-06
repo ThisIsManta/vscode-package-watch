@@ -27,7 +27,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         await checkDependencies(packageJsonPathList, token)
 
-        pendingOperation = null
+            pendingOperation = null
     }, 300)
     const batch = (path: string | Array<string>) => {
         if (typeof path === 'string') {
@@ -51,7 +51,7 @@ export async function activate(context: vscode.ExtensionContext) {
             batch(link.fsPath)
 
         } else if (fp.basename(link.fsPath) === 'package-lock.json') {
-            batch(fp.join(fp.basename(link.fsPath), 'package.json'))
+            batch(fp.join(fp.dirname(link.fsPath), 'package.json'))
 
         } else { // In case of 'yarn.lock'
             batch(await getPackageJsonPathList())
@@ -277,7 +277,7 @@ function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string) {
 
     // See https://yarnpkg.com/lang/en/docs/workspaces/
     const packageJsonForYarnWorkspace = readFile(fp.join(fp.dirname(yarnLockPath), 'package.json')) as { private?: boolean, workspaces?: Array<string> }
-    if (packageJsonForYarnWorkspace.private !== true || !packageJsonForYarnWorkspace.workspaces) {
+    if (!packageJsonForYarnWorkspace || packageJsonForYarnWorkspace.private !== true || !packageJsonForYarnWorkspace.workspaces) {
         return false
     }
 
@@ -371,12 +371,12 @@ async function installDependencies(reports: Array<Report> = [], options: { force
                 if (
                     fs.existsSync(fp.join(fp.dirname(packageJsonPath), 'yarn.lock')) ||
                     checkYarnWorkspace(packageJsonPath, yarnLockPath) ||
-                    cp.spawnSync('which', ['yarn']).status === 0
+                    cp.spawnSync('which', ['yarn']).status === 0 && fs.existsSync(fp.join(fp.dirname(packageJsonPath), 'package-lock.json')) === false
                 ) {
                     return {
                         command: 'yarn install',
                         parameters: [options.forceChecking && '--check-files', options.forceDownloading && '--force'],
-                        directory: fp.dirname(yarnLockPath),
+                        directory: fp.dirname(yarnLockPath || packageJsonPath),
                         packageJsonPath,
                     }
 
