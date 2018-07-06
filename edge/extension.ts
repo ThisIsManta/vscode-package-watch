@@ -1,11 +1,11 @@
 import * as fs from 'fs'
 import * as fp from 'path'
-import * as ps from 'process'
 import * as cp from 'child_process'
 import * as vscode from 'vscode'
 import * as _ from 'lodash'
 import * as yarn from '@yarnpkg/lockfile'
 import * as glob from 'glob'
+import * as semver from 'semver'
 
 let fileWatcher: vscode.FileSystemWatcher
 let outputChannel: vscode.OutputChannel
@@ -117,7 +117,7 @@ async function getPackageJsonPathList() {
 
 type Report = {
     packageJsonPath: string
-    problems: Array<string>
+    problems: Array<{ toString: () => string, forceChecking: boolean }>
 }
 
 async function checkDependencies(packageJsonPathList: Array<string>, token: vscode.CancellationToken) {
@@ -137,21 +137,13 @@ async function checkDependencies(packageJsonPathList: Array<string>, token: vsco
         return
     }
 
-    const problems = _.chain(reports)
+    const forceChecking = _.chain(reports)
         .map(report => report.problems)
         .flatten()
+        .some(problem => problem.forceChecking)
         .value()
-    let message = 'One or more node dependencies were outdated.'
-    let forceChecking = true
-    if (problems.every(problem => problem === 'The lock file was missing.' || problem.includes('was not installed.'))) {
-        message = 'One or more node dependencies needed to be installed.'
-        forceChecking = false
-    } else if (problems.some(problem => problem.includes('was not found in /node_module/ directory.'))) {
-        message = 'One or more node dependencies were missing from /node_module/ directory.'
-    }
-
     const selectOption = await vscode.window.showWarningMessage(
-        message,
+        'One or more node dependencies were outdated.',
         {
             title: 'Install Dependencies',
             action: () => installDependencies(reports.map(report => report.packageJsonPath), { forceChecking }, token)
@@ -175,58 +167,58 @@ async function checkDependencies(packageJsonPathList: Array<string>, token: vsco
     }
 }
 
-function createReports(packageJsonPathList: Array<string>, cancellationToken: vscode.CancellationToken) {
-    const reports: Array<Report> = []
-    for (const packageJsonPath of packageJsonPathList) {
-        if (fp.basename(packageJsonPath) !== 'package.json') {
-            continue
-        }
+function createReports(packageJsonPathList: Array<string>, cancellationToken: vscode.CancellationToken): Array<Report> {
+    return packageJsonPathList
+        .filter(packageJsonPath => fp.basename(packageJsonPath) === 'package.json')
+        .map(packageJsonPath => {
+            if (cancellationToken.isCancellationRequested) {
+                return
+            }
 
-        if (cancellationToken.isCancellationRequested) {
-            return
-        }
+            const expectedDependencies = _.chain(readFile(packageJsonPath) as object)
+                .pick(['dependencies', 'devDependencies', 'peerDependencies']) // TODO: add 'bundledDependencies'
+                .values()
+                .map(item => _.toPairs<string>(item))
+                .flatten()
+                .value()
 
-        const expectedDependencies = _.chain(readFile(packageJsonPath) as object)
-            .pick(['dependencies', 'devDependencies', 'peerDependencies']) // TODO: add 'bundledDependencies'
-            .values()
-            .map(item => _.toPairs<string>(item))
-            .flatten()
-            .value()
+            const dependencies = (
+                getDependenciesFromYarnLock(packageJsonPath, expectedDependencies) ||
+                getDependenciesFromPackageLock(packageJsonPath, expectedDependencies)
+            )
+            if (!dependencies) {
+                return {
+                    packageJsonPath,
+                    problems: [{ toString: () => 'The lock file was missing.', forceChecking: false }]
+                }
+            }
 
-        const dependencies = (
-            getDependenciesFromYarnLock(packageJsonPath, expectedDependencies) ||
-            getDependenciesFromPackageLock(packageJsonPath, expectedDependencies)
-        )
-        if (!dependencies) {
-            reports.push({
+            return {
                 packageJsonPath,
-                problems: ['The lock file was missing.']
-            })
-            continue
-        }
+                problems: _.compact(dependencies.map(item => {
+                    if (!item.lockedVersion && !item.actualVersion) {
+                        return { toString: () => `"${item.name}" was not installed.`, forceChecking: false }
+                    }
 
-        reports.push({
-            packageJsonPath,
-            problems: _.compact(dependencies.map(item => {
-                if (!item.lockedVersion && !item.actualVersion) {
-                    return `"${item.name}" was not installed.`
-                }
+                    if (!item.lockedVersion) {
+                        return { toString: () => `"${item.name}" was not found in the lock file.`, forceChecking: false }
+                    }
 
-                if (!item.lockedVersion) {
-                    return `"${item.name}" was not found in the lock file.`
-                }
+                    if (semver.validRange(item.expectedVersion) && semver.valid(item.lockedVersion) && semver.satisfies(item.lockedVersion, item.expectedVersion) === false) {
+                        return { toString: () => `"${item.name}" was expected to be ${item.expectedVersion} but got ${item.lockedVersion} in the lock file.`, forceChecking: false }
+                    }
 
-                if (!item.actualVersion) {
-                    return `"${item.name}" was not found in /node_module/ directory.`
-                }
+                    if (!item.actualVersion) {
+                        return { toString: () => `"${item.name}" was not found in /node_module/ directory.`, forceChecking: true }
+                    }
 
-                if (item.lockedVersion !== item.actualVersion) {
-                    return `"${item.name}" had a mismatched version (${item.lockedVersion} vs ${item.actualVersion}).`
-                }
-            }))
+                    if (item.lockedVersion !== item.actualVersion) {
+                        return { toString: () => `"${item.name}" was expected to be ${item.lockedVersion} but got ${item.actualVersion} in /node_module/ directory.`, forceChecking: true }
+                    }
+                }))
+            }
         })
-    }
-    return reports.filter(report => report.problems.length > 0)
+        .filter(report => report && report.problems.length > 0)
 }
 
 function printReports(reports: Array<Report>, token: vscode.CancellationToken) {
@@ -253,11 +245,11 @@ function getDependenciesFromPackageLock(packageJsonPath: string, expectedDepende
         return null
     }
 
-    const depsData = _.get(readFile(packageLockPath), 'dependencies', {}) as { [key: string]: { version: string } }
-    const depsHash = _.mapValues(depsData, item => item.version)
+    const nameObjectHash = _.get(readFile(packageLockPath), 'dependencies', {}) as { [key: string]: { version: string } }
+    const nameVersionHash = _.mapValues(nameObjectHash, item => item.version)
 
     return expectedDependencies.map(([name, expectedVersion]) => {
-        const lockedVersion = depsHash[name]
+        const lockedVersion = nameVersionHash[name]
 
         const modulePath = fp.join(fp.dirname(packageJsonPath), 'node_modules', name, 'package.json')
         const actualVersion = _.get(readFile(modulePath), 'version') as string
@@ -277,13 +269,13 @@ function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependenci
         return null
     }
 
-    const depsData = _.get(readFile(yarnLockPath), 'object', {}) as { [key: string]: { version: string } }
-    const depsHash = _.mapValues(depsData, item => item.version)
+    const nameObjectHash = _.get(readFile(yarnLockPath), 'object', {}) as { [key: string]: { version: string } }
+    const nameVersionHash = _.mapValues(nameObjectHash, item => item.version)
 
     return expectedDependencies.map(([name, expectedVersion]) => {
-        const lockedVersion = (
-            depsHash[name + '@' + expectedVersion] ||
-            _.findLast(depsHash, (version, nameAtVersion) => nameAtVersion.startsWith(name + '@'))
+        let lockedVersion = (
+            nameVersionHash[name + '@' + expectedVersion] ||
+            _.findLast(nameVersionHash, (version, nameAtVersion) => nameAtVersion.startsWith(name + '@'))
         )
 
         const modulePath = findName(
@@ -486,7 +478,7 @@ async function installDependencies(packageJsonPathList: Array<string>, options: 
     const reports = await createReports(packageJsonPathList, token)
     printReports(reports, token)
     if (reports.length > 0) {
-        const selectOption = await vscode.window.showErrorMessage(
+        const selectOption = await vscode.window.showWarningMessage(
             'There were still some problems regarding the node dependencies.',
             {
                 title: 'Reinstall Dependencies',
