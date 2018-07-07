@@ -357,12 +357,13 @@ async function installDependencies(reports: Array<Report> = [], options: { force
 
     if (vscode.workspace.workspaceFolders === undefined) {
         vscode.window.showErrorMessage('No workspaces opened.', { modal: true })
+        pendingOperation = null
         return
     }
 
     const packageJsonPathList = reports.length === 0
-        ? reports.map(report => report.packageJsonPath)
-        : await getPackageJsonPathList()
+        ? await getPackageJsonPathList()
+        : reports.map(report => report.packageJsonPath)
 
     if (token.isCancellationRequested) {
         return
@@ -370,7 +371,8 @@ async function installDependencies(reports: Array<Report> = [], options: { force
 
     if (packageJsonPathList.length === 0) {
         vscode.window.showErrorMessage('No "package.json" found.', { modal: true })
-        return true
+        pendingOperation = null
+        return
     }
 
     const success = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing node dependencies...', cancellable: true }, async (progress, progressToken) => {
@@ -469,9 +471,6 @@ async function installDependencies(reports: Array<Report> = [], options: { force
                         selectOption.action()
                     }
                 })
-                if (token === pendingOperation.token) {
-                    pendingOperation = null
-                }
                 return
             }
         }
@@ -479,19 +478,19 @@ async function installDependencies(reports: Array<Report> = [], options: { force
         return true
     })
 
-    if (!success) {
-        return
+    if (token === pendingOperation.token) {
+        pendingOperation = null
     }
 
     if (token.isCancellationRequested) {
         return
     }
 
-    if (options.forceDownloading) {
+    if (!success) {
         return
     }
 
-    {
+    if (!options.forceDownloading) {
         const reports = await createReports(packageJsonPathList, token)
         printReports(reports, token)
         if (reports.length > 0) {
@@ -518,9 +517,5 @@ async function installDependencies(reports: Array<Report> = [], options: { force
         } else {
             vscode.window.showInformationMessage('The node dependencies are installed successfully.')
         }
-    }
-
-    if (token === pendingOperation.token) {
-        pendingOperation = null
     }
 }
