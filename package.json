@@ -1,7 +1,7 @@
 {
     "name": "package-watch",
     "displayName": "Manta's Package Watch",
-    "description": "Keep your node dependencies in-sync with the lock file.",
+    "description": "Keep your node dependencies fresh.",
     "version": "0.0.1",
     "publisher": "thisismanta",
     "categories": [
