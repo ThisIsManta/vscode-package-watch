@@ -2,6 +2,8 @@
 
 ## Basic usage
 
+![Package Watch](docs/vscode.gif)
+
 As soon as **Package Watch** is installed, the extension offers the following features:
 - Running `packageWatch.checkDependencies` command finds all of your `package.json` inside the current workspace, and tells if all node dependency is in-sync.
 - Running `packageWatch.installDependencies` command executes either `yarn install --check-files` or `npm install`, and finally runs `packageWatch.checkDependencies` command.
