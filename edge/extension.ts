@@ -181,6 +181,11 @@ function createReports(packageJsonPathList: Array<string>, cancellationToken: vs
                 .flatten()
                 .value()
 
+            // Skip this file as there is no dependencies written in the file
+            if (expectedDependencies.length === 0) {
+                return
+            }
+
             const dependencies = (
                 getDependenciesFromYarnLock(packageJsonPath, expectedDependencies) ||
                 getDependenciesFromPackageLock(packageJsonPath, expectedDependencies)
