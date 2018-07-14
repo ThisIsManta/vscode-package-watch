@@ -2,7 +2,7 @@
     "name": "package-watch",
     "displayName": "Manta's Package Watch",
     "description": "Keep your node dependencies fresh.",
-    "version": "0.0.2",
+    "version": "0.0.3",
     "publisher": "thisismanta",
     "categories": [
         "Other"
