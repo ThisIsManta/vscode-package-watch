@@ -1,4 +1,4 @@
-import * as fs from 'fs'
+import * as fs from 'fs-extra'
 import * as fp from 'path'
 import * as cp from 'child_process'
 import * as vscode from 'vscode'
@@ -120,7 +120,11 @@ async function getPackageJsonPathList() {
 
 type Report = {
     packageJsonPath: string
-    problems: Array<{ toString: () => string, forceChecking: boolean }>
+    problems: Array<{
+        toString: () => string,
+        moduleCheckingNeeded?: boolean,
+        modulePathForCleaningUp?: string
+    }>
 }
 
 async function checkDependencies(packageJsonPathList: Array<string>, token: vscode.CancellationToken) {
@@ -140,17 +144,12 @@ async function checkDependencies(packageJsonPathList: Array<string>, token: vsco
         return
     }
 
-    const forceChecking = _.chain(reports)
-        .map(report => report.problems)
-        .flatten()
-        .some(problem => problem.forceChecking)
-        .value()
     vscode.window.showWarningMessage(
         'One or more node dependencies were outdated.',
         {
             title: 'Install Dependencies',
             action: () => {
-                installDependencies(reports, { forceChecking })
+                installDependencies(reports)
             }
         },
         {
@@ -193,7 +192,7 @@ function createReports(packageJsonPathList: Array<string>, cancellationToken: vs
             if (!dependencies) {
                 return {
                     packageJsonPath,
-                    problems: [{ toString: () => 'The lock file was missing.', forceChecking: false }]
+                    problems: [{ toString: () => 'The lock file was missing.' }]
                 }
             }
 
@@ -201,23 +200,30 @@ function createReports(packageJsonPathList: Array<string>, cancellationToken: vs
                 packageJsonPath,
                 problems: _.compact(dependencies.map(item => {
                     if (!item.lockedVersion && !item.actualVersion) {
-                        return { toString: () => `"${item.name}" was not installed.`, forceChecking: false }
+                        return { toString: () => `"${item.name}" was not installed.` }
                     }
 
                     if (!item.lockedVersion) {
-                        return { toString: () => `"${item.name}" was not found in the lock file.`, forceChecking: false }
+                        return { toString: () => `"${item.name}" was not found in the lock file.` }
                     }
 
                     if (semver.validRange(item.expectedVersion) && semver.valid(item.lockedVersion) && semver.satisfies(item.lockedVersion, item.expectedVersion) === false) {
-                        return { toString: () => `"${item.name}" was expected to be ${item.expectedVersion} but got ${item.lockedVersion} in the lock file.`, forceChecking: false }
+                        return { toString: () => `"${item.name}" was expected to be ${item.expectedVersion} but got ${item.lockedVersion} in the lock file.` }
                     }
 
                     if (!item.actualVersion) {
-                        return { toString: () => `"${item.name}" was not found in /node_module/ directory.`, forceChecking: true }
+                        return {
+                            toString: () => `"${item.name}" was not found in /node_module/ directory.`,
+                            moduleCheckingNeeded: true
+                        }
                     }
 
                     if (item.lockedVersion !== item.actualVersion) {
-                        return { toString: () => `"${item.name}" was expected to be ${item.lockedVersion} but got ${item.actualVersion} in /node_module/ directory.`, forceChecking: true }
+                        return {
+                            toString: () => `"${item.name}" was expected to be ${item.lockedVersion} but got ${item.actualVersion} in /node_module/ directory.`,
+                            moduleCheckingNeeded: true,
+                            modulePathForCleaningUp: item.path
+                        }
                     }
                 }))
             }
@@ -258,7 +264,10 @@ function getDependenciesFromPackageLock(packageJsonPath: string, expectedDepende
         const modulePath = fp.join(fp.dirname(packageJsonPath), 'node_modules', name, 'package.json')
         const actualVersion = _.get(readFile(modulePath), 'version') as string
 
-        return { name, expectedVersion, lockedVersion, actualVersion }
+        return {
+            name, path: fp.dirname(modulePath),
+            expectedVersion, lockedVersion, actualVersion
+        }
     })
 }
 
@@ -289,7 +298,10 @@ function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependenci
         )
         const actualVersion = _.get(readFile(modulePath), 'version') as string
 
-        return { name, expectedVersion, lockedVersion, actualVersion }
+        return {
+            name, path: modulePath ? fp.dirname(modulePath) : undefined,
+            expectedVersion, lockedVersion, actualVersion
+        }
     })
 }
 
@@ -345,7 +357,7 @@ function readFile(filePath: string): object | string {
     }
 }
 
-async function installDependencies(reports: Array<Report> = [], options: { forceChecking?: boolean, forceDownloading?: boolean } = {}) {
+async function installDependencies(reports: Array<Report> = [], secondTry = false) {
     if (pendingOperation instanceof CheckingOperation) {
         pendingOperation.cancel()
     } else if (pendingOperation instanceof InstallationOperation) {
@@ -388,6 +400,28 @@ async function installDependencies(reports: Array<Report> = [], options: { force
             }
         })
 
+        const problems = _.chain(reports)
+            .map(report => report.problems)
+            .flatten()
+            .value()
+
+        // Remove the problematic modules from /node_module/ so `--check-files` will work
+        for (const problem of problems) {
+            if (
+                problem.modulePathForCleaningUp &&
+                fs.existsSync(problem.modulePathForCleaningUp) &&
+                fp.basename(fp.dirname(problem.modulePathForCleaningUp)) === 'node_modules'
+            ) {
+                try {
+                    fs.removeSync(problem.modulePathForCleaningUp)
+                } catch (error) {
+                    // Do nothing
+                }
+            }
+        }
+
+        const moduleCheckingNeeded = _.some(problems, problem => problem.moduleCheckingNeeded)
+
         const commands = _.chain(packageJsonPathList)
             .map(packageJsonPath => {
                 if (token.isCancellationRequested) {
@@ -402,7 +436,7 @@ async function installDependencies(reports: Array<Report> = [], options: { force
                 ) {
                     return {
                         command: 'yarn install',
-                        parameters: [options.forceChecking && '--check-files', options.forceDownloading && '--force'],
+                        parameters: [(moduleCheckingNeeded || secondTry) && '--check-files', secondTry && '--force'],
                         directory: fp.dirname(yarnLockPath || packageJsonPath),
                         packageJsonPath,
                     }
@@ -410,7 +444,7 @@ async function installDependencies(reports: Array<Report> = [], options: { force
                 } else {
                     return {
                         command: 'npm install',
-                        parameters: [options.forceDownloading && '--force'],
+                        parameters: [secondTry && '--force'],
                         directory: fp.dirname(packageJsonPath),
                         packageJsonPath,
                     }
@@ -495,32 +529,34 @@ async function installDependencies(reports: Array<Report> = [], options: { force
         return
     }
 
-    if (!options.forceDownloading) {
-        const reports = await createReports(packageJsonPathList, token)
-        printReports(reports, token)
-        if (reports.length > 0) {
-            vscode.window.showWarningMessage(
-                'There were still some problems regarding the node dependencies.',
-                {
-                    title: 'Reinstall Dependencies',
-                    action: () => {
-                        installDependencies(reports, { forceChecking: true, forceDownloading: true })
-                    }
-                },
-                {
-                    title: 'Show Problems',
-                    action: () => {
-                        outputChannel.show()
-                    }
-                },
-            ).then(selectOption => {
-                if (selectOption) {
-                    selectOption.action()
-                }
-            })
+    if (secondTry) {
+        return
+    }
 
-        } else {
-            vscode.window.showInformationMessage('The node dependencies are installed successfully.')
-        }
+    const reviews = await createReports(packageJsonPathList, token)
+    printReports(reviews, token)
+    if (reviews.length > 0) {
+        vscode.window.showWarningMessage(
+            'There were still some problems regarding the node dependencies.',
+            {
+                title: 'Reinstall Dependencies',
+                action: () => {
+                    installDependencies(reviews, true)
+                }
+            },
+            {
+                title: 'Show Problems',
+                action: () => {
+                    outputChannel.show()
+                }
+            },
+        ).then(selectOption => {
+            if (selectOption) {
+                selectOption.action()
+            }
+        })
+
+    } else {
+        vscode.window.showInformationMessage('The node dependencies are installed successfully.')
     }
 }
