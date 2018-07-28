@@ -10,6 +10,7 @@ import * as semver from 'semver'
 let fileWatcher: vscode.FileSystemWatcher
 let outputChannel: vscode.OutputChannel
 let pendingOperation: vscode.CancellationTokenSource
+const lastCheckedDependencies = new Map<string, object>()
 
 class CheckingOperation extends vscode.CancellationTokenSource { }
 class InstallationOperation extends vscode.CancellationTokenSource { }
@@ -32,7 +33,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const packageJsonPathList = _.uniq(queue)
         queue.splice(0, queue.length)
 
-        await checkDependencies(packageJsonPathList, token)
+        await checkDependencies(packageJsonPathList, true, token)
 
         if (token === pendingOperation.token) {
             pendingOperation = null
@@ -85,7 +86,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         outputChannel.clear()
 
-        const success = await checkDependencies(await getPackageJsonPathList(), token)
+        const success = await checkDependencies(await getPackageJsonPathList(), false, token)
         if (success) {
             vscode.window.showInformationMessage('The node dependencies are in-sync.')
         }
@@ -127,8 +128,8 @@ type Report = {
     }>
 }
 
-async function checkDependencies(packageJsonPathList: Array<string>, token: vscode.CancellationToken) {
-    const reports = createReports(packageJsonPathList, token)
+async function checkDependencies(packageJsonPathList: Array<string>, skipUnchanged: boolean, token: vscode.CancellationToken) {
+    const reports = createReports(packageJsonPathList, skipUnchanged, token)
 
     if (token.isCancellationRequested) {
         return
@@ -165,11 +166,11 @@ async function checkDependencies(packageJsonPathList: Array<string>, token: vsco
     })
 }
 
-function createReports(packageJsonPathList: Array<string>, cancellationToken: vscode.CancellationToken): Array<Report> {
+function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolean, token: vscode.CancellationToken): Array<Report> {
     return packageJsonPathList
         .filter(packageJsonPath => fp.basename(packageJsonPath) === 'package.json')
         .map(packageJsonPath => {
-            if (cancellationToken.isCancellationRequested) {
+            if (token.isCancellationRequested) {
                 return
             }
 
@@ -184,6 +185,12 @@ function createReports(packageJsonPathList: Array<string>, cancellationToken: vs
             if (expectedDependencies.length === 0) {
                 return
             }
+
+            const packageJsonHash = _.fromPairs(expectedDependencies)
+            if (skipUnchanged && lastCheckedDependencies.has(packageJsonPath) && _.isEqual(lastCheckedDependencies.get(packageJsonPath), packageJsonHash)) {
+                return
+            }
+            lastCheckedDependencies.set(packageJsonPath, packageJsonHash)
 
             const dependencies = (
                 getDependenciesFromYarnLock(packageJsonPath, expectedDependencies) ||
@@ -533,7 +540,7 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
         return
     }
 
-    const reviews = await createReports(packageJsonPathList, token)
+    const reviews = await createReports(packageJsonPathList, false, token)
     printReports(reviews, token)
     if (reviews.length > 0) {
         vscode.window.showWarningMessage(

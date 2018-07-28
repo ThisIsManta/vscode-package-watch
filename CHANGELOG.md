@@ -1,5 +1,6 @@
 ### 0.0.4
 - Fixed unexpected `package.json` in `node_modules` directory.
+- Fixed unexpected auto-checking on unchanged `package.json`.
 
 ### 0.0.3
 - Fixed cleaning up the module directories when the module version mismatched.
