@@ -115,7 +115,7 @@ export function deactivate() {
 }
 
 async function getPackageJsonPathList() {
-    return (await vscode.workspace.findFiles('**/package.json')).map(link => link.fsPath)
+    return (await vscode.workspace.findFiles('**/package.json', '**/node_modules/**')).map(link => link.fsPath)
 }
 
 type Report = {
