@@ -279,12 +279,12 @@ function getDependenciesFromPackageLock(packageJsonPath: string, expectedDepende
 }
 
 function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependencies: Array<[string, string]>) {
-    const yarnLockPath = findName(fp.dirname(packageJsonPath), 'yarn.lock')
+    const yarnLockPath = findFileInParentDirectory(fp.dirname(packageJsonPath), 'yarn.lock')
     if (!yarnLockPath) {
         return null
     }
 
-    // Stop processing if the current directory is not part of a Yarn Workspace
+    // Stop processing if the current directory is not part of the Yarn Workspace
     if (fp.dirname(yarnLockPath) !== fp.dirname(packageJsonPath) && !checkYarnWorkspace(packageJsonPath, yarnLockPath)) {
         return null
     }
@@ -298,7 +298,7 @@ function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependenci
             _.findLast(nameVersionHash, (version, nameAtVersion) => nameAtVersion.startsWith(name + '@'))
         )
 
-        const modulePath = findName(
+        const modulePath = findFileInParentDirectory(
             fp.dirname(packageJsonPath),
             fp.join('node_modules', name, 'package.json'),
             fp.dirname(yarnLockPath)
@@ -335,7 +335,7 @@ function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string) {
     return false
 }
 
-function findName(path: string, name: string, stop?: string) {
+function findFileInParentDirectory(path: string, name: string, stop?: string) {
     const pathList = path.split(fp.sep)
     while (pathList.length > 1) {
         const workPath = [...pathList, name].join(fp.sep)
@@ -435,7 +435,7 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
                     return
                 }
 
-                const yarnLockPath = findName(fp.dirname(packageJsonPath), 'yarn.lock')
+                const yarnLockPath = findFileInParentDirectory(fp.dirname(packageJsonPath), 'yarn.lock')
                 if (
                     fs.existsSync(fp.join(fp.dirname(packageJsonPath), 'yarn.lock')) ||
                     checkYarnWorkspace(packageJsonPath, yarnLockPath) ||
