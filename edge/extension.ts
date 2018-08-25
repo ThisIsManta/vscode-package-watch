@@ -338,7 +338,7 @@ function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string) {
 function findName(path: string, name: string, stop?: string) {
     const pathList = path.split(fp.sep)
     while (pathList.length > 1) {
-        const workPath = fp.join(...pathList, name)
+        const workPath = [...pathList, name].join(fp.sep)
         if (stop && workPath.startsWith(stop) === false) {
             break
         }

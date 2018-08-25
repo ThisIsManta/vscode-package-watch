@@ -1,3 +1,6 @@
+### 0.0.5
+- Fixed missing lock file because of path mismatched in macOS.
+
 ### 0.0.4
 - Fixed unexpected `package.json` in `node_modules` directory.
 - Fixed unexpected auto-checking on unchanged `package.json`.
