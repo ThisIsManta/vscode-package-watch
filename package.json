@@ -1,71 +1,71 @@
 {
-    "name": "package-watch",
-    "displayName": "Manta's Package Watch",
-    "description": "Keep your node dependencies fresh.",
-    "version": "0.0.5",
-    "publisher": "thisismanta",
-    "categories": [
-        "Other"
-    ],
-    "keywords": [
-        "npm",
-        "yarn",
-        "package",
-        "dependencies",
-        "install"
-    ],
-    "repository": {
-        "url": "https://github.com/ThisIsManta/vscode-package-watch"
-    },
-    "bugs": {
-        "url": "https://github.com/ThisIsManta/vscode-package-watch/issues"
-    },
-    "icon": "docs/logo.png",
-    "galleryBanner": {
-        "color": "#212121",
-        "theme": "dark"
-    },
-    "engines": {
-        "vscode": "^1.36.0"
-    },
-    "activationEvents": [
-        "workspaceContains:**/package.json"
-    ],
-    "main": "./dist/extension",
-    "contributes": {
-        "commands": [
-            {
-                "command": "packageWatch.checkDependencies",
-                "title": "Package Watch: Check Dependencies"
-            },
-            {
-                "command": "packageWatch.installDependencies",
-                "title": "Package Watch: Install Dependencies"
-            }
-        ]
-    },
-    "scripts": {
-        "compile": "tsc --watch --project ./",
-        "vscode:prepublish": "tsc --skipLibCheck --project ./",
-        "preversion": "git push --dry-run origin master:master",
-        "version": "vsce publish",
-        "postversion": "git push --tags --quiet origin master:master"
-    },
-    "devDependencies": {
-        "@types/fs-extra": "^8.0.0",
-        "@types/glob": "^7.1.1",
-        "@types/lodash": "^4.14.136",
-        "@types/node": "^12.0.0",
-        "@types/semver": "^6.0.1",
-        "@types/vscode": "1.36.0",
-        "vscode": "^1.1.35"
-    },
-    "dependencies": {
-        "@yarnpkg/lockfile": "^1.1.0",
-        "fs-extra": "^8.1.0",
-        "glob": "^7.1.4",
-        "lodash": "^4.17.15",
-        "semver": "^6.3.0",
-        "typescript": "^3.5.3"
-    }
+	"name": "package-watch",
+	"displayName": "Manta's Package Watch",
+	"description": "Keep your node dependencies fresh.",
+	"version": "0.0.5",
+	"publisher": "thisismanta",
+	"categories": [
+		"Other"
+	],
+	"keywords": [
+		"npm",
+		"yarn",
+		"package",
+		"dependencies",
+		"install"
+	],
+	"repository": {
+		"url": "https://github.com/ThisIsManta/vscode-package-watch"
+	},
+	"bugs": {
+		"url": "https://github.com/ThisIsManta/vscode-package-watch/issues"
+	},
+	"icon": "docs/logo.png",
+	"galleryBanner": {
+		"color": "#212121",
+		"theme": "dark"
+	},
+	"engines": {
+		"vscode": "^1.36.0"
+	},
+	"activationEvents": [
+		"workspaceContains:**/package.json"
+	],
+	"main": "./dist/extension",
+	"contributes": {
+		"commands": [
+			{
+				"command": "packageWatch.checkDependencies",
+				"title": "Package Watch: Check Dependencies"
+			},
+			{
+				"command": "packageWatch.installDependencies",
+				"title": "Package Watch: Install Dependencies"
+			}
+		]
+	},
+	"scripts": {
+		"compile": "tsc --watch --project ./",
+		"vscode:prepublish": "tsc --skipLibCheck --project ./",
+		"preversion": "git push --dry-run origin master:master",
+		"version": "vsce publish",
+		"postversion": "git push --tags --quiet origin master:master"
+	},
+	"devDependencies": {
+		"@types/fs-extra": "^8.0.0",
+		"@types/glob": "^7.1.1",
+		"@types/lodash": "^4.14.136",
+		"@types/node": "^12.0.0",
+		"@types/semver": "^6.0.1",
+		"@types/vscode": "1.36.0",
+		"vscode": "^1.1.35"
+	},
+	"dependencies": {
+		"@yarnpkg/lockfile": "^1.1.0",
+		"fs-extra": "^8.1.0",
+		"glob": "^7.1.4",
+		"lodash": "^4.17.15",
+		"semver": "^6.3.0",
+		"typescript": "^3.5.3"
+	}
 }
