@@ -1,3 +1,6 @@
+### 0.1.0
+- Reduced start-up time.
+
 ### 0.0.5
 - Fixed missing lock file because of path mismatched in macOS.
 
