@@ -337,7 +337,7 @@ function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string) {
 		return false
 	}
 
-	const yarnWorkspacePathList = packageJsonForYarnWorkspace.workspaces
+	const yarnWorkspacePathList = (packageJsonForYarnWorkspace.workspaces || [])
 		.flatMap(pathOrGlob => glob.sync(pathOrGlob, { cwd: fp.dirname(yarnLockPath), absolute: true }))
 		.map(path => path.replace(/\//g, fp.sep))
 	if (yarnWorkspacePathList.includes(fp.dirname(packageJsonPath))) {
