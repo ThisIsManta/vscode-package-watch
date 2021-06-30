@@ -31,7 +31,7 @@
 	"activationEvents": [
 		"workspaceContains:**/package.json"
 	],
-	"main": "./dist/extension",
+	"main": "dist/extension.js",
 	"contributes": {
 		"commands": [
 			{
@@ -45,8 +45,10 @@
 		]
 	},
 	"scripts": {
-		"compile": "tsc --watch --project ./",
-		"vscode:prepublish": "tsc --skipLibCheck --project ./",
+		"postinstall": "code --install-extension connor4312.esbuild-problem-matchers",
+		"build": "esbuild edge/extension.ts --bundle --platform=node --outfile=dist/extension.js --external:vscode --external:typescript --format=cjs",
+		"watch": "npm run build -- --watch --sourcemap",
+		"vscode:prepublish": "tsc --noEmit && npm run build -- --minify",
 		"preversion": "git push --dry-run origin master:master",
 		"version": "vsce publish",
 		"postversion": "git push --tags --quiet origin master:master"
@@ -57,14 +59,15 @@
 		"@types/lodash": "^4.14.170",
 		"@types/node": "^14.0.0",
 		"@types/semver": "^7.3.6",
-		"vscode": "^1.1.37"
-	},
-	"dependencies": {
 		"@yarnpkg/lockfile": "^1.1.0",
+		"esbuild": "^0.12.12",
 		"fs-extra": "^10.0.0",
 		"glob": "^7.1.7",
 		"lodash": "^4.17.21",
 		"semver": "^7.3.5",
+		"vscode": "^1.1.37"
+	},
+	"dependencies": {
 		"typescript": "^4.3.4"
 	}
 }
