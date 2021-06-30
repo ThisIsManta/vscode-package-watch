@@ -1,11 +1,22 @@
-import * as fs from 'fs-extra'
+import * as fs from 'fs'
+import { removeSync } from 'fs-extra/lib/remove'
 import * as fp from 'path'
 import * as cp from 'child_process'
 import * as vscode from 'vscode'
-import * as _ from 'lodash'
+import get from 'lodash/get'
+import compact from 'lodash/compact'
+import uniq from 'lodash/uniq'
+import uniqBy from 'lodash/uniqBy'
+import sortBy from 'lodash/sortBy'
+import mapValues from 'lodash/mapValues'
+import findLast from 'lodash/findLast'
+import debounce from 'lodash/debounce'
+import isEqual from 'lodash/isEqual'
 import * as yarn from '@yarnpkg/lockfile'
 import * as glob from 'glob'
-import * as semver from 'semver'
+import validRange from 'semver/ranges/valid'
+import validVersion from 'semver/functions/valid'
+import satisfies from 'semver/functions/satisfies'
 
 let fileWatcher: vscode.FileSystemWatcher
 let outputChannel: vscode.OutputChannel
@@ -19,7 +30,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	outputChannel = vscode.window.createOutputChannel('Package Watch')
 
 	const queue: Array<string> = []
-	const defer = _.debounce(async () => {
+	const defer = debounce(async () => {
 		if (pendingOperation) {
 			return
 		}
@@ -30,7 +41,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			return
 		}
 
-		const packageJsonPathList = _.uniq(queue)
+		const packageJsonPathList = uniq(queue)
 		queue.splice(0, queue.length)
 
 		await checkDependencies(packageJsonPathList, true, token)
@@ -174,20 +185,23 @@ function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolea
 				return
 			}
 
-			const expectedDependencies = _.chain(readFile(packageJsonPath) as object)
-				.pick(['dependencies', 'devDependencies', 'peerDependencies']) // TODO: add 'bundledDependencies'
-				.values()
-				.map(item => _.toPairs<string>(item))
-				.flatten()
-				.value()
+			const expectedDependencies = (() => {
+				const packageJson = readFile(packageJsonPath) as { [key: string]: any }
+				return compact([
+					packageJson.dependencies,
+					packageJson.devDependencies,
+					packageJson.peerDependencies,
+					// TODO: add 'bundledDependencies'
+				]).flatMap(item => Object.entries<string>(item))
+			})()
 
 			// Skip this file as there is no dependencies written in the file
 			if (expectedDependencies.length === 0) {
 				return
 			}
 
-			const packageJsonHash = _.fromPairs(expectedDependencies)
-			if (skipUnchanged && lastCheckedDependencies.has(packageJsonPath) && _.isEqual(lastCheckedDependencies.get(packageJsonPath), packageJsonHash)) {
+			const packageJsonHash = Object.fromEntries(expectedDependencies)
+			if (skipUnchanged && lastCheckedDependencies.has(packageJsonPath) && isEqual(lastCheckedDependencies.get(packageJsonPath), packageJsonHash)) {
 				return
 			}
 			lastCheckedDependencies.set(packageJsonPath, packageJsonHash)
@@ -205,7 +219,7 @@ function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolea
 
 			return {
 				packageJsonPath,
-				problems: _.compact(dependencies.map(item => {
+				problems: compact(dependencies.map(item => {
 					if (!item.lockedVersion && !item.actualVersion) {
 						return { toString: () => `"${item.name}" was not installed.` }
 					}
@@ -214,7 +228,7 @@ function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolea
 						return { toString: () => `"${item.name}" was not found in the lock file.` }
 					}
 
-					if (semver.validRange(item.expectedVersion) && semver.valid(item.lockedVersion) && semver.satisfies(item.lockedVersion, item.expectedVersion) === false) {
+					if (validRange(item.expectedVersion) && validVersion(item.lockedVersion) && satisfies(item.lockedVersion, item.expectedVersion) === false) {
 						return { toString: () => `"${item.name}" was expected to be ${item.expectedVersion} but got ${item.lockedVersion} in the lock file.` }
 					}
 
@@ -262,14 +276,14 @@ function getDependenciesFromPackageLock(packageJsonPath: string, expectedDepende
 		return null
 	}
 
-	const nameObjectHash = _.get(readFile(packageLockPath), 'dependencies', {}) as { [key: string]: { version: string } }
-	const nameVersionHash = _.mapValues(nameObjectHash, item => item.version)
+	const nameObjectHash = get(readFile(packageLockPath), 'dependencies', {}) as { [key: string]: { version: string } }
+	const nameVersionHash = mapValues(nameObjectHash, item => item.version)
 
 	return expectedDependencies.map(([name, expectedVersion]) => {
 		const lockedVersion = nameVersionHash[name]
 
 		const modulePath = fp.join(fp.dirname(packageJsonPath), 'node_modules', name, 'package.json')
-		const actualVersion = _.get(readFile(modulePath), 'version') as string
+		const actualVersion = get(readFile(modulePath), 'version') as string
 
 		return {
 			name, path: fp.dirname(modulePath),
@@ -289,13 +303,13 @@ function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependenci
 		return null
 	}
 
-	const nameObjectHash = _.get(readFile(yarnLockPath), 'object', {}) as { [key: string]: { version: string } }
-	const nameVersionHash = _.mapValues(nameObjectHash, item => item.version)
+	const nameObjectHash = get(readFile(yarnLockPath), 'object', {}) as { [key: string]: { version: string } }
+	const nameVersionHash = mapValues(nameObjectHash, item => item.version)
 
 	return expectedDependencies.map(([name, expectedVersion]) => {
 		let lockedVersion = (
 			nameVersionHash[name + '@' + expectedVersion] ||
-			_.findLast(nameVersionHash, (version, nameAtVersion) => nameAtVersion.startsWith(name + '@'))
+			findLast(nameVersionHash, (version, nameAtVersion) => nameAtVersion.startsWith(name + '@'))
 		)
 
 		const modulePath = findFileInParentDirectory(
@@ -303,7 +317,7 @@ function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependenci
 			fp.join('node_modules', name, 'package.json'),
 			fp.dirname(yarnLockPath)
 		)
-		const actualVersion = _.get(readFile(modulePath), 'version') as string
+		const actualVersion = get(readFile(modulePath), 'version') as string
 
 		return {
 			name, path: modulePath ? fp.dirname(modulePath) : undefined,
@@ -323,12 +337,10 @@ function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string) {
 		return false
 	}
 
-	const yarnWorkspacePathList = _.chain(packageJsonForYarnWorkspace.workspaces)
-		.map(pathOrGlob => glob.sync(pathOrGlob, { cwd: fp.dirname(yarnLockPath), absolute: true }))
-		.flatten()
+	const yarnWorkspacePathList = packageJsonForYarnWorkspace.workspaces
+		.flatMap(pathOrGlob => glob.sync(pathOrGlob, { cwd: fp.dirname(yarnLockPath), absolute: true }))
 		.map(path => path.replace(/\//g, fp.sep))
-		.value()
-	if (_.includes(yarnWorkspacePathList, fp.dirname(packageJsonPath))) {
+	if (yarnWorkspacePathList.includes(fp.dirname(packageJsonPath))) {
 		return true
 	}
 
@@ -407,10 +419,7 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 			}
 		})
 
-		const problems = _.chain(reports)
-			.map(report => report.problems)
-			.flatten()
-			.value()
+		const problems = reports.flatMap(report => report.problems)
 
 		// Remove the problematic modules from /node_module/ so `--check-files` will work
 		for (const problem of problems) {
@@ -420,52 +429,52 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 				fp.basename(fp.dirname(problem.modulePathForCleaningUp)) === 'node_modules'
 			) {
 				try {
-					fs.removeSync(problem.modulePathForCleaningUp)
+					removeSync(problem.modulePathForCleaningUp)
 				} catch (error) {
 					// Do nothing
 				}
 			}
 		}
 
-		const moduleCheckingNeeded = _.some(problems, problem => problem.moduleCheckingNeeded)
+		const moduleCheckingNeeded = problems.some(problem => problem.moduleCheckingNeeded)
 
-		const commands = _.chain(packageJsonPathList)
-			.map(packageJsonPath => {
-				if (token.isCancellationRequested) {
-					return
-				}
-
-				const yarnLockPath = findFileInParentDirectory(fp.dirname(packageJsonPath), 'yarn.lock')
-				if (
-					fs.existsSync(fp.join(fp.dirname(packageJsonPath), 'yarn.lock')) ||
-					checkYarnWorkspace(packageJsonPath, yarnLockPath) ||
-					cp.spawnSync('which', ['yarn']).status === 0 && fs.existsSync(fp.join(fp.dirname(packageJsonPath), 'package-lock.json')) === false
-				) {
-					return {
-						command: 'yarn install',
-						parameters: [(moduleCheckingNeeded || secondTry) && '--check-files', secondTry && '--force'],
-						directory: fp.dirname(yarnLockPath || packageJsonPath),
-						packageJsonPath,
+		const totalCommands = compact(
+			packageJsonPathList
+				.map(packageJsonPath => {
+					if (token.isCancellationRequested) {
+						return
 					}
 
-				} else {
-					return {
-						command: 'npm install',
-						parameters: [secondTry && '--force'],
-						directory: fp.dirname(packageJsonPath),
-						packageJsonPath,
+					const yarnLockPath = findFileInParentDirectory(fp.dirname(packageJsonPath), 'yarn.lock')
+					if (
+						fs.existsSync(fp.join(fp.dirname(packageJsonPath), 'yarn.lock')) ||
+						checkYarnWorkspace(packageJsonPath, yarnLockPath) ||
+						cp.spawnSync('which', ['yarn']).status === 0 && fs.existsSync(fp.join(fp.dirname(packageJsonPath), 'package-lock.json')) === false
+					) {
+						return {
+							command: 'yarn install',
+							parameters: [(moduleCheckingNeeded || secondTry) && '--check-files', secondTry && '--force'],
+							directory: fp.dirname(yarnLockPath || packageJsonPath),
+							packageJsonPath,
+						}
+
+					} else {
+						return {
+							command: 'npm install',
+							parameters: [secondTry && '--force'],
+							directory: fp.dirname(packageJsonPath),
+							packageJsonPath,
+						}
 					}
-				}
-			})
-			.compact()
-			.map(item => ({ ...item, parameters: _.compact(item.parameters) }))
-			.uniqBy(({ directory }) => directory)
-			.sortBy(({ directory }) => directory.length)
-			.value()
+				})
+		).map(item => ({ ...item, parameters: compact(item.parameters) }))
 
-		const progressWidth = 100 / commands.length
+		const uniqueCommands = uniqBy(totalCommands, ({ directory }) => directory)
+		const sortedCommands = sortBy(uniqueCommands, ({ directory }) => directory.length)
 
-		for (const { command, parameters, directory, packageJsonPath } of commands) {
+		const progressWidth = 100 / sortedCommands.length
+
+		for (const { command, parameters, directory, packageJsonPath } of sortedCommands) {
 			if (token.isCancellationRequested) {
 				return
 			}
