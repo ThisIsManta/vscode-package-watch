@@ -12,6 +12,7 @@ import mapValues from 'lodash/mapValues'
 import findLast from 'lodash/findLast'
 import debounce from 'lodash/debounce'
 import isEqual from 'lodash/isEqual'
+import trim from 'lodash/trim'
 import * as yarn from '@yarnpkg/lockfile'
 import glob from 'glob/sync'
 import validRange from 'semver/ranges/valid'
@@ -160,18 +161,23 @@ type Report = {
 type PackageName = string
 type Version = string
 
-async function checkDependencies(packageJsonPathList: Array<string>, skipUnchanged: boolean, token: vscode.CancellationToken) {
-	const reports = createReports(packageJsonPathList, skipUnchanged, token)
+async function checkDependencies(
+	packageJsonPathList: Array<string>,
+	onlyChangedDependencies: boolean,
+	token: vscode.CancellationToken,
+) {
+	const reports = createReports(packageJsonPathList, onlyChangedDependencies, token)
+	const problematicReports = reports.filter(report => report.problems.length > 0)
 
 	if (token.isCancellationRequested) {
 		return
 	}
 
-	if (reports.length === 0) {
+	if (problematicReports.length === 0) {
 		return true
 	}
 
-	printReports(reports, token)
+	printReports(problematicReports, token)
 
 	if (token.isCancellationRequested) {
 		return
@@ -186,14 +192,13 @@ async function checkDependencies(packageJsonPathList: Array<string>, skipUnchang
 			return `${reports[0].problems.length} ${reports[0].problems.length === 1 ? 'Dependency' : 'Dependencies'} outdated ❌`
 		}
 
-		const commonPath = getCommonPath(reports.map(report => report.packageJsonPath))
-		return 'Dependencies outdated ❌ ' + reports
-			.map(report => fp.dirname(report.packageJsonPath.substring(commonPath.length + fp.sep.length)))
+		const commonPath = getCommonPath(vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) || [])
+		return 'Dependencies outdated ❌ ' + problematicReports
+			.map(report => trim(fp.dirname(report.packageJsonPath.substring(commonPath.length)), fp.sep))
 			.join(', ')
 	})()
 
-	vscode.window.showWarningMessage(
-		message,
+	const options: Array<{ title: string, action: () => void }> = compact([
 		{
 			title: 'Install',
 			action: () => {
@@ -206,17 +211,23 @@ async function checkDependencies(packageJsonPathList: Array<string>, skipUnchang
 				outputChannel.show()
 			}
 		}
-	).then(selectOption => {
+	])
+
+	vscode.window.showWarningMessage(message, ...options).then(selectOption => {
 		if (selectOption) {
 			selectOption.action()
 		}
 	})
 }
 
-function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolean, token: vscode.CancellationToken): Array<Report> {
-	return packageJsonPathList
+function createReports(
+	packageJsonPathList: Array<string>,
+	onlyChangedDependencies: boolean,
+	token: vscode.CancellationToken,
+): Array<Report> {
+	return compact(packageJsonPathList
 		.filter(packageJsonPath => fp.basename(packageJsonPath) === 'package.json')
-		.map((packageJsonPath): Report | void => {
+		.map((packageJsonPath): Report | undefined => {
 			if (token.isCancellationRequested) {
 				return
 			}
@@ -237,7 +248,7 @@ function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolea
 			}
 
 			const packageJsonHash = Object.fromEntries(expectedDependencies)
-			if (skipUnchanged && lastCheckedDependencies.has(packageJsonPath) && isEqual(lastCheckedDependencies.get(packageJsonPath), packageJsonHash)) {
+			if (onlyChangedDependencies && lastCheckedDependencies.has(packageJsonPath) && isEqual(lastCheckedDependencies.get(packageJsonPath), packageJsonHash)) {
 				return
 			}
 			lastCheckedDependencies.set(packageJsonPath, packageJsonHash)
@@ -291,11 +302,10 @@ function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolea
 					}
 				}))
 			}
-		})
-		.filter((report): report is Report => !!report && report.problems.length > 0)
+		}))
 }
 
-function printReports(reports: Array<Report>, token: vscode.CancellationToken) {
+function printReports(reports: Array<Report>, token: vscode.CancellationToken): void {
 	for (const { packageJsonPath, problems } of reports) {
 		if (token.isCancellationRequested) {
 			return
@@ -624,15 +634,18 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 		return
 	}
 
-	const reviews = createReports(packageJsonPathList, false, token)
-	printReports(reviews, token)
-	if (reviews.length > 0) {
+	const verifiedReports = createReports(packageJsonPathList, false, token)
+	const problematicReports = verifiedReports.filter(review => review.problems.length > 0)
+
+	printReports(problematicReports, token)
+
+	if (problematicReports.length > 0) {
 		vscode.window.showWarningMessage(
 			'Dependencies not installed correctly 💥',
 			{
 				title: 'Force Install',
 				action: () => {
-					installDependencies(reviews, true)
+					installDependencies(problematicReports, true)
 				}
 			},
 			{
