@@ -20,7 +20,7 @@ import satisfies from 'semver/functions/satisfies'
 
 let fileWatcher: vscode.FileSystemWatcher
 let outputChannel: vscode.OutputChannel
-let pendingOperation: vscode.CancellationTokenSource
+let pendingOperation: vscode.CancellationTokenSource | null = null
 const lastCheckedDependencies = new Map<string, object>()
 
 class CheckingOperation extends vscode.CancellationTokenSource { }
@@ -48,7 +48,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			await checkDependencies(packageJsonPathList, true, token)
 
 		} catch (error) {
-			outputChannel.appendLine(error)
+			outputChannel.appendLine(String(error))
 
 			vscode.window.showErrorMessage(String(error))
 
@@ -113,7 +113,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			}
 
 		} catch (error) {
-			outputChannel.appendLine(error)
+			outputChannel.appendLine(String(error))
 
 			throw error
 
@@ -197,7 +197,7 @@ async function checkDependencies(packageJsonPathList: Array<string>, skipUnchang
 function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolean, token: vscode.CancellationToken): Array<Report> {
 	return packageJsonPathList
 		.filter(packageJsonPath => fp.basename(packageJsonPath) === 'package.json')
-		.map(packageJsonPath => {
+		.map((packageJsonPath): Report | void => {
 			if (token.isCancellationRequested) {
 				return
 			}
@@ -266,7 +266,7 @@ function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolea
 				}))
 			}
 		})
-		.filter(report => report && report.problems.length > 0)
+		.filter((report): report is Report => !!report && report.problems.length > 0)
 }
 
 function printReports(reports: Array<Report>, token: vscode.CancellationToken) {
@@ -321,7 +321,7 @@ function getDependenciesFromPackageLock(packageJsonPath: string, expectedDepende
 		const lockedVersion = nameVersionHash[name]
 
 		const modulePath = fp.join(fp.dirname(packageJsonPath), 'node_modules', name, 'package.json')
-		const actualVersion = get(readFile(modulePath), 'version') as string
+		const actualVersion = get(readFile(modulePath), 'version') as unknown as string
 
 		return {
 			name,
@@ -358,16 +358,19 @@ function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependenci
 			fp.join('node_modules', name, 'package.json'),
 			fp.dirname(yarnLockPath)
 		)
-		const actualVersion = get(readFile(modulePath), 'version') as string
+		const actualVersion = modulePath ? get(readFile(modulePath), 'version') as unknown as string : undefined
 
 		return {
-			name, path: modulePath ? fp.dirname(modulePath) : undefined,
-			expectedVersion, lockedVersion, actualVersion
+			name,
+			path: modulePath ? fp.dirname(modulePath) : undefined,
+			expectedVersion,
+			lockedVersion,
+			actualVersion,
 		}
 	})
 }
 
-function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string) {
+function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string): boolean {
 	if (!packageJsonPath || !yarnLockPath) {
 		return false
 	}
@@ -388,7 +391,7 @@ function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string) {
 	return false
 }
 
-function findFileInParentDirectory(path: string, name: string, stop?: string) {
+function findFileInParentDirectory(path: string, name: string, stop?: string): string | undefined {
 	const pathList = path.split(fp.sep)
 	while (pathList.length > 1) {
 		const workPath = [...pathList, name].join(fp.sep)
@@ -402,7 +405,7 @@ function findFileInParentDirectory(path: string, name: string, stop?: string) {
 	}
 }
 
-function readFile(filePath: string): object | string {
+function readFile(filePath: string): object | string | null {
 	try {
 		const text = fs.readFileSync(filePath, 'utf-8')
 		if (fp.extname(filePath) === '.json') {
@@ -454,7 +457,7 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 
 	const success = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing node dependencies...', cancellable: true }, async (progress, progressToken) => {
 		progressToken.onCancellationRequested(() => {
-			if (token === pendingOperation.token) {
+			if (token === pendingOperation?.token) {
 				pendingOperation.cancel()
 				pendingOperation = null
 			}
@@ -489,7 +492,7 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 					const yarnLockPath = findFileInParentDirectory(fp.dirname(packageJsonPath), 'yarn.lock')
 					if (
 						fs.existsSync(fp.join(fp.dirname(packageJsonPath), 'yarn.lock')) ||
-						checkYarnWorkspace(packageJsonPath, yarnLockPath) ||
+						yarnLockPath && checkYarnWorkspace(packageJsonPath, yarnLockPath) ||
 						cp.spawnSync('which', ['yarn']).status === 0 && fs.existsSync(fp.join(fp.dirname(packageJsonPath), 'package-lock.json')) === false
 					) {
 						return {
@@ -546,7 +549,7 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 				worker.on('exit', code => {
 					progress.report({ increment: Math.floor((maxStep - nowStep) / maxStep * progressWidth) })
 
-					resolve(code)
+					resolve(code ?? 0)
 				})
 
 				token.onCancellationRequested(() => {
@@ -590,7 +593,7 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 		return
 	}
 
-	const reviews = await createReports(packageJsonPathList, false, token)
+	const reviews = createReports(packageJsonPathList, false, token)
 	printReports(reviews, token)
 	if (reviews.length > 0) {
 		vscode.window.showWarningMessage(
