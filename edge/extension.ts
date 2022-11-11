@@ -109,7 +109,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			const success = await checkDependencies(await getPackageJsonPathList(), false, token)
 
 			if (success) {
-				vscode.window.showInformationMessage('The node dependencies are in-sync.')
+				vscode.window.showInformationMessage('Dependencies complete ✅')
 			}
 
 		} catch (error) {
@@ -150,11 +150,15 @@ async function getPackageJsonPathList() {
 type Report = {
 	packageJsonPath: string
 	problems: Array<{
+		packageName?: string
 		toString: () => string,
 		moduleCheckingNeeded?: boolean,
 		modulePathForCleaningUp?: string
 	}>
 }
+
+type PackageName = string
+type Version = string
 
 async function checkDependencies(packageJsonPathList: Array<string>, skipUnchanged: boolean, token: vscode.CancellationToken) {
 	const reports = createReports(packageJsonPathList, skipUnchanged, token)
@@ -173,16 +177,31 @@ async function checkDependencies(packageJsonPathList: Array<string>, skipUnchang
 		return
 	}
 
+	const message: string = (() => {
+		if (reports.length === 1) {
+			if (reports[0].problems.length === 1 && !reports[0].problems[0].packageName) {
+				return reports[0].problems[0].toString() + ' ❌'
+			}
+
+			return `${reports[0].problems.length} ${reports[0].problems.length === 1 ? 'Dependency' : 'Dependencies'} outdated ❌`
+		}
+
+		const commonPath = getCommonPath(reports.map(report => report.packageJsonPath))
+		return 'Dependencies outdated ❌ ' + reports
+			.map(report => fp.dirname(report.packageJsonPath.substring(commonPath.length + fp.sep.length)))
+			.join(', ')
+	})()
+
 	vscode.window.showWarningMessage(
-		'One or more node dependencies were outdated.',
+		message,
 		{
-			title: 'Install Dependencies',
+			title: 'Install',
 			action: () => {
 				installDependencies(reports)
 			}
 		},
 		{
-			title: 'Show Problems',
+			title: 'Explain',
 			action: () => {
 				outputChannel.show()
 			}
@@ -202,14 +221,14 @@ function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolea
 				return
 			}
 
-			const expectedDependencies = (() => {
+			const expectedDependencies: Array<[PackageName, Version]> = (() => {
 				const packageJson = readFile(packageJsonPath) as Record<string, any>
 				return compact([
 					packageJson.dependencies,
 					packageJson.devDependencies,
 					packageJson.peerDependencies,
 					// TODO: add 'bundledDependencies'
-				]).flatMap(item => Object.entries<string>(item))
+				]).flatMap(item => Object.entries<Version>(item))
 			})()
 
 			// Skip this file as there is no dependencies written in the file
@@ -230,35 +249,42 @@ function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolea
 			if (!dependencies) {
 				return {
 					packageJsonPath,
-					problems: [{ toString: () => 'The lock file was missing.' }]
+					problems: [{
+						toString: () => 'No lockfile found'
+					}]
+				}
+			}
+
+			if (dependencies.every(item => item.actualVersion === undefined)) {
+				return {
+					packageJsonPath,
+					problems: [{
+						toString: () => 'No dependencies installed'
+					}]
 				}
 			}
 
 			return {
 				packageJsonPath,
 				problems: compact(dependencies.map(item => {
-					if (!item.lockedVersion && !item.actualVersion) {
-						return { toString: () => `"${item.name}" was not installed.` }
-					}
-
-					if (!item.lockedVersion) {
-						return { toString: () => `"${item.name}" was not found in the lock file.` }
+					if (!item.lockedVersion || !item.actualVersion) {
+						return {
+							packageName: item.name,
+							toString: () => 'to be installed'
+						}
 					}
 
 					if (validRange(item.expectedVersion) && validVersion(item.lockedVersion) && satisfies(item.lockedVersion, item.expectedVersion) === false) {
-						return { toString: () => `"${item.name}" was expected to be ${item.expectedVersion} but got ${item.lockedVersion} in the lock file.` }
-					}
-
-					if (!item.actualVersion) {
 						return {
-							toString: () => `"${item.name}" was not found in /node_module/ directory.`,
-							moduleCheckingNeeded: true
+							packageName: item.name,
+							toString: () => `to be ${item.expectedVersion} but got ${item.lockedVersion} in lockfile`
 						}
 					}
 
 					if (item.lockedVersion !== item.actualVersion) {
 						return {
-							toString: () => `"${item.name}" was expected to be ${item.lockedVersion} but got ${item.actualVersion} in /node_module/ directory.`,
+							packageName: item.name,
+							toString: () => `to be ${item.lockedVersion} but got ${item.actualVersion} in node_modules`,
 							moduleCheckingNeeded: true,
 							modulePathForCleaningUp: item.path
 						}
@@ -282,12 +308,12 @@ function printReports(reports: Array<Report>, token: vscode.CancellationToken) {
 				return
 			}
 
-			outputChannel.appendLine('  ' + problem)
+			outputChannel.appendLine('  ' + (problem.packageName ? `"${problem.packageName}": ` : '') + problem.toString())
 		}
 	}
 }
 
-function getDependenciesFromPackageLock(packageJsonPath: string, expectedDependencies: Array<[string, string]>) {
+function getDependenciesFromPackageLock(packageJsonPath: string, expectedDependencies: Array<[PackageName, Version]>) {
 	const packageLockPath = fp.join(fp.dirname(packageJsonPath), 'package-lock.json')
 	const packageLockFile = readFile(packageLockPath) as {
 		lockfileVersion?: number
@@ -333,7 +359,7 @@ function getDependenciesFromPackageLock(packageJsonPath: string, expectedDepende
 	})
 }
 
-function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependencies: Array<[string, string]>) {
+function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependencies: Array<[PackageName, Version]>) {
 	const yarnLockPath = findFileInParentDirectory(fp.dirname(packageJsonPath), 'yarn.lock')
 	if (!yarnLockPath) {
 		return null
@@ -382,7 +408,7 @@ function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string): bool
 	}
 
 	const yarnWorkspacePathList = (packageJsonForYarnWorkspace.workspaces || [])
-		.flatMap(pathOrGlob => glob.sync(pathOrGlob, { cwd: fp.dirname(yarnLockPath), absolute: true }))
+		.flatMap(pathOrGlob => glob(pathOrGlob, { cwd: fp.dirname(yarnLockPath), absolute: true }))
 		.map(path => path.replace(/\//g, fp.sep))
 	if (yarnWorkspacePathList.includes(fp.dirname(packageJsonPath))) {
 		return true
@@ -436,7 +462,7 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 	}
 
 	if (vscode.workspace.workspaceFolders === undefined) {
-		vscode.window.showErrorMessage('No workspaces opened.', { modal: true })
+		vscode.window.showErrorMessage('No workspaces opened 🙄', { modal: true })
 		pendingOperation = null
 		return
 	}
@@ -450,12 +476,12 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 	}
 
 	if (packageJsonPathList.length === 0) {
-		vscode.window.showErrorMessage('No "package.json" found.', { modal: true })
+		vscode.window.showErrorMessage('No package.json found 🙄', { modal: true })
 		pendingOperation = null
 		return
 	}
 
-	const success = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing node dependencies...', cancellable: true }, async (progress, progressToken) => {
+	const success = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Dependencies being installed... 🚧', cancellable: true }, async (progress, progressToken) => {
 		progressToken.onCancellationRequested(() => {
 			if (token === pendingOperation?.token) {
 				pendingOperation.cancel()
@@ -563,8 +589,13 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 
 			if (exitCode !== 0) {
 				vscode.window.showErrorMessage(
-					`There was an error running "${command}".`,
-					{ title: 'Show Errors', action: () => { outputChannel.show() } }
+					`Error running "${command}" 💥`,
+					{
+						title: 'Explain',
+						action: () => {
+							outputChannel.show()
+						}
+					}
 				).then(selectOption => {
 					if (selectOption) {
 						selectOption.action()
@@ -597,15 +628,15 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 	printReports(reviews, token)
 	if (reviews.length > 0) {
 		vscode.window.showWarningMessage(
-			'There were still some problems regarding the node dependencies.',
+			'Dependencies not installed correctly 💥',
 			{
-				title: 'Reinstall Dependencies',
+				title: 'Force Install',
 				action: () => {
 					installDependencies(reviews, true)
 				}
 			},
 			{
-				title: 'Show Problems',
+				title: 'Explain',
 				action: () => {
 					outputChannel.show()
 				}
@@ -617,6 +648,24 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 		})
 
 	} else {
-		vscode.window.showInformationMessage('The node dependencies are installed successfully.')
+		vscode.window.showInformationMessage('Dependencies complete ✅')
 	}
+}
+
+function getCommonPath(pathList: Array<string>): string {
+	if (pathList.length === 0) {
+		return ''
+	}
+
+	if (pathList.length === 1) {
+		return pathList[0]
+	}
+
+	const commonPath: Array<string> = pathList[0].split(fp.sep)
+	for (const path of pathList.slice(1)) {
+		while (commonPath.length > 0 && !path.startsWith(fp.join(...commonPath) + fp.sep)) {
+			commonPath.pop()
+		}
+	}
+	return fp.join(...commonPath)
 }
