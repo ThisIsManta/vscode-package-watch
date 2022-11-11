@@ -44,10 +44,18 @@ export async function activate(context: vscode.ExtensionContext) {
 		const packageJsonPathList = uniq(queue)
 		queue.splice(0, queue.length)
 
-		await checkDependencies(packageJsonPathList, true, token)
+		try {
+			await checkDependencies(packageJsonPathList, true, token)
 
-		if (token === pendingOperation.token) {
-			pendingOperation = null
+		} catch (error) {
+			outputChannel.appendLine(error)
+
+			vscode.window.showErrorMessage(String(error))
+
+		} finally {
+			if (token === pendingOperation.token) {
+				pendingOperation = null
+			}
 		}
 
 		if (queue.length > 0) {
@@ -97,13 +105,22 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		outputChannel.clear()
 
-		const success = await checkDependencies(await getPackageJsonPathList(), false, token)
-		if (success) {
-			vscode.window.showInformationMessage('The node dependencies are in-sync.')
-		}
+		try {
+			const success = await checkDependencies(await getPackageJsonPathList(), false, token)
 
-		if (token === pendingOperation.token) {
-			pendingOperation = null
+			if (success) {
+				vscode.window.showInformationMessage('The node dependencies are in-sync.')
+			}
+
+		} catch (error) {
+			outputChannel.appendLine(error)
+
+			throw error
+
+		} finally {
+			if (token === pendingOperation.token) {
+				pendingOperation = null
+			}
 		}
 	}))
 
@@ -186,7 +203,7 @@ function createReports(packageJsonPathList: Array<string>, skipUnchanged: boolea
 			}
 
 			const expectedDependencies = (() => {
-				const packageJson = readFile(packageJsonPath) as { [key: string]: any }
+				const packageJson = readFile(packageJsonPath) as Record<string, any>
 				return compact([
 					packageJson.dependencies,
 					packageJson.devDependencies,
@@ -272,12 +289,33 @@ function printReports(reports: Array<Report>, token: vscode.CancellationToken) {
 
 function getDependenciesFromPackageLock(packageJsonPath: string, expectedDependencies: Array<[string, string]>) {
 	const packageLockPath = fp.join(fp.dirname(packageJsonPath), 'package-lock.json')
-	if (!fs.existsSync(packageLockPath)) {
+	const packageLockFile = readFile(packageLockPath) as {
+		lockfileVersion?: number
+		packages?: Record<string, { version: string }>
+		dependencies?: Record<string, { version: string }>
+	}
+
+	if (packageLockFile === null) {
 		return null
 	}
 
-	const nameObjectHash = get(readFile(packageLockPath), 'dependencies', {}) as { [key: string]: { version: string } }
-	const nameVersionHash = mapValues(nameObjectHash, item => item.version)
+	const nameVersionHash = ((): Record<string, string> => {
+		// See https://docs.npmjs.com/cli/v9/configuring-npm/package-lock-json#packages
+		if (packageLockFile.packages) {
+			const topLevelModuleDirectory = /^node_modules\//
+
+			return Object.fromEntries(
+				Object.entries(packageLockFile.packages)
+					.map(([path, { version }]) => [path.replace(topLevelModuleDirectory, ''), version])
+			)
+		}
+
+		if (packageLockFile.dependencies) {
+			return mapValues(packageLockFile.dependencies, ({ version }) => version)
+		}
+
+		throw new Error(`Could not find neither "packages" nor "dependencies" field in ${packageLockPath}`)
+	})()
 
 	return expectedDependencies.map(([name, expectedVersion]) => {
 		const lockedVersion = nameVersionHash[name]
@@ -286,8 +324,11 @@ function getDependenciesFromPackageLock(packageJsonPath: string, expectedDepende
 		const actualVersion = get(readFile(modulePath), 'version') as string
 
 		return {
-			name, path: fp.dirname(modulePath),
-			expectedVersion, lockedVersion, actualVersion
+			name,
+			path: fp.dirname(modulePath),
+			expectedVersion,
+			lockedVersion,
+			actualVersion,
 		}
 	})
 }

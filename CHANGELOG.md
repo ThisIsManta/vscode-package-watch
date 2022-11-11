@@ -1,3 +1,6 @@
+### 0.2.0
+- Added support of `package-lock.json` version 3.
+
 ### 0.1.1
 - Fixed the error accessing undefined.
 
