@@ -11,7 +11,6 @@ import sortBy from 'lodash/sortBy'
 import mapValues from 'lodash/mapValues'
 import findLast from 'lodash/findLast'
 import debounce from 'lodash/debounce'
-import isEqual from 'lodash/isEqual'
 import trim from 'lodash/trim'
 import * as yarn from '@yarnpkg/lockfile'
 import glob from 'glob/sync'
@@ -22,7 +21,6 @@ import satisfies from 'semver/functions/satisfies'
 let fileWatcher: vscode.FileSystemWatcher
 let outputChannel: vscode.OutputChannel
 let pendingOperation: vscode.CancellationTokenSource | null = null
-const lastCheckedDependencies = new Map<string, object>()
 
 class CheckingOperation extends vscode.CancellationTokenSource { }
 class InstallationOperation extends vscode.CancellationTokenSource { }
@@ -46,7 +44,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		queue.splice(0, queue.length)
 
 		try {
-			await checkDependencies(packageJsonPathList, true, token)
+			await checkDependencies(packageJsonPathList, token)
 
 		} catch (error) {
 			outputChannel.appendLine(String(error))
@@ -107,7 +105,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		outputChannel.clear()
 
 		try {
-			const success = await checkDependencies(await getPackageJsonPathList(), false, token)
+			const success = await checkDependencies(await getPackageJsonPathList(), token)
 
 			if (success) {
 				vscode.window.showInformationMessage('Dependencies complete ✅')
@@ -163,10 +161,9 @@ type Version = string
 
 async function checkDependencies(
 	packageJsonPathList: Array<string>,
-	onlyChangedDependencies: boolean,
 	token: vscode.CancellationToken,
 ) {
-	const reports = createReports(packageJsonPathList, onlyChangedDependencies, token)
+	const reports = createReports(packageJsonPathList, token)
 	const problematicReports = reports.filter(report => report.problems.length > 0)
 
 	if (token.isCancellationRequested) {
@@ -183,19 +180,30 @@ async function checkDependencies(
 		return
 	}
 
-	const message: string = (() => {
-		if (reports.length === 1) {
-			if (reports[0].problems.length === 1 && !reports[0].problems[0].packageName) {
-				return reports[0].problems[0].toString() + ' ❌'
-			}
+	const totalPackageJsonCount = (await getPackageJsonPathList()).length
 
-			return `${reports[0].problems.length} ${reports[0].problems.length === 1 ? 'Dependency' : 'Dependencies'} outdated ❌`
+	const message: string = (() => {
+		const containingCommonPath = getCommonPath(vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) || [])
+		const containingDirectoryName = fp.basename(containingCommonPath)
+		const parentCommonPath = containingCommonPath.substring(0, containingCommonPath.length - containingDirectoryName.length)
+		function getRelativePath(packageJsonPath: string) {
+			return trim(fp.dirname(packageJsonPath.substring(parentCommonPath.length)), fp.sep)
 		}
 
-		const commonPath = getCommonPath(vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) || [])
-		return 'Dependencies outdated ❌ ' + problematicReports
-			.map(report => trim(fp.dirname(report.packageJsonPath.substring(commonPath.length)), fp.sep))
-			.join(', ')
+		if (problematicReports.length === 1) {
+			const packageLocation = totalPackageJsonCount > 1
+				? getRelativePath(problematicReports[0].packageJsonPath)
+				: ''
+			const colon = packageLocation ? ': ' : ''
+
+			if (problematicReports[0].problems.length === 1 && !problematicReports[0].problems[0].packageName) {
+				return problematicReports[0].problems[0].toString() + ' ❌' + colon + packageLocation
+			}
+
+			return problematicReports[0].problems.length + ' ' + (problematicReports[0].problems.length === 1 ? 'Dependency' : 'Dependencies') + ' outdated ❌' + colon + packageLocation
+		}
+
+		return 'Dependencies outdated ❌: ' + problematicReports.map(report => getRelativePath(report.packageJsonPath)).join(', ')
 	})()
 
 	const options: Array<{ title: string, action: () => void }> = compact([
@@ -222,7 +230,6 @@ async function checkDependencies(
 
 function createReports(
 	packageJsonPathList: Array<string>,
-	onlyChangedDependencies: boolean,
 	token: vscode.CancellationToken,
 ): Array<Report> {
 	return compact(packageJsonPathList
@@ -246,12 +253,6 @@ function createReports(
 			if (expectedDependencies.length === 0) {
 				return
 			}
-
-			const packageJsonHash = Object.fromEntries(expectedDependencies)
-			if (onlyChangedDependencies && lastCheckedDependencies.has(packageJsonPath) && isEqual(lastCheckedDependencies.get(packageJsonPath), packageJsonHash)) {
-				return
-			}
-			lastCheckedDependencies.set(packageJsonPath, packageJsonHash)
 
 			const dependencies = (
 				getDependenciesFromYarnLock(packageJsonPath, expectedDependencies) ||
@@ -634,7 +635,7 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 		return
 	}
 
-	const verifiedReports = createReports(packageJsonPathList, false, token)
+	const verifiedReports = createReports(packageJsonPathList, token)
 	const problematicReports = verifiedReports.filter(review => review.problems.length > 0)
 
 	printReports(problematicReports, token)
