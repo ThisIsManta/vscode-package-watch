@@ -50,7 +50,7 @@
 	},
 	"scripts": {
 		"postinstall": "code --install-extension connor4312.esbuild-problem-matchers",
-		"build": "esbuild edge/extension.ts --bundle --platform=node --outfile=dist/extension.js --external:vscode --external:typescript --format=cjs",
+		"build": "esbuild edge/extension.ts --bundle --platform=node --outfile=dist/extension.js --external:vscode --format=cjs",
 		"watch": "npm run build -- --watch --sourcemap",
 		"vscode:prepublish": "tsc --noEmit && npm run build -- --minify",
 		"preversion": "git push --dry-run origin master:master",
@@ -69,9 +69,7 @@
 		"fs-extra": "^10.1.0",
 		"glob": "^8.0.3",
 		"lodash": "^4.17.21",
-		"semver": "^7.3.8"
-	},
-	"dependencies": {
+		"semver": "^7.3.8",
 		"typescript": "^4.8.4"
 	}
 }
