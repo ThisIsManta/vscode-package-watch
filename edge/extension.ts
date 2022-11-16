@@ -3,7 +3,6 @@ import { removeSync } from 'fs-extra/lib/remove'
 import * as fp from 'path'
 import * as cp from 'child_process'
 import * as vscode from 'vscode'
-import get from 'lodash/get'
 import compact from 'lodash/compact'
 import uniq from 'lodash/uniq'
 import uniqBy from 'lodash/uniqBy'
@@ -156,8 +155,16 @@ type Report = {
 	}>
 }
 
-type PackageName = string
-type Version = string
+type PackageJson = {
+	name: string
+	version: string
+	private?: boolean
+	dependencies?: Record<string, string>
+	devDependencies?: Record<string, string>
+	peerDependencies?: Record<string, string>
+	bundledDependencies?: Record<string, string>
+	workspaces?: Array<string>
+}
 
 async function checkDependencies(
 	packageJsonPathList: Array<string>,
@@ -239,14 +246,14 @@ function createReports(
 				return
 			}
 
-			const expectedDependencies: Array<[PackageName, Version]> = (() => {
-				const packageJson = readFile(packageJsonPath) as Record<string, any>
+			const expectedDependencies: Array<[PackageJson['name'], PackageJson['version']]> = (() => {
+				const packageJson = readFile<PackageJson>(packageJsonPath)
 				return compact([
-					packageJson.dependencies,
-					packageJson.devDependencies,
-					packageJson.peerDependencies,
+					packageJson?.dependencies,
+					packageJson?.devDependencies,
+					packageJson?.peerDependencies,
 					// TODO: add 'bundledDependencies'
-				]).flatMap(item => Object.entries<Version>(item))
+				]).flatMap(item => Object.entries<PackageJson['version']>(item))
 			})()
 
 			// Skip this file as there is no dependencies written in the file
@@ -324,7 +331,10 @@ function printReports(reports: Array<Report>, token: vscode.CancellationToken): 
 	}
 }
 
-function getDependenciesFromPackageLock(packageJsonPath: string, expectedDependencies: Array<[PackageName, Version]>) {
+function getDependenciesFromPackageLock(
+	packageJsonPath: string,
+	expectedDependencies: Array<[PackageJson['name'], PackageJson['version']]>,
+) {
 	const packageLockPath = fp.join(fp.dirname(packageJsonPath), 'package-lock.json')
 	const packageLockFile = readFile(packageLockPath) as {
 		lockfileVersion?: number
@@ -336,7 +346,7 @@ function getDependenciesFromPackageLock(packageJsonPath: string, expectedDepende
 		return null
 	}
 
-	const nameVersionHash = ((): Record<string, string> => {
+	const nameVersionHash = ((): Record<string, string | undefined> => {
 		// See https://docs.npmjs.com/cli/v9/configuring-npm/package-lock-json#packages
 		if (packageLockFile.packages) {
 			const topLevelModuleDirectory = /^node_modules\//
@@ -358,7 +368,7 @@ function getDependenciesFromPackageLock(packageJsonPath: string, expectedDepende
 		const lockedVersion = nameVersionHash[name]
 
 		const modulePath = fp.join(fp.dirname(packageJsonPath), 'node_modules', name, 'package.json')
-		const actualVersion = get(readFile(modulePath), 'version') as unknown as string
+		const actualVersion = readFile<PackageJson>(modulePath)?.version
 
 		return {
 			name,
@@ -370,7 +380,10 @@ function getDependenciesFromPackageLock(packageJsonPath: string, expectedDepende
 	})
 }
 
-function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependencies: Array<[PackageName, Version]>) {
+function getDependenciesFromYarnLock(
+	packageJsonPath: string,
+	expectedDependencies: Array<[PackageJson['name'], PackageJson['version']]>,
+) {
 	const yarnLockPath = findFileInParentDirectory(fp.dirname(packageJsonPath), 'yarn.lock')
 	if (!yarnLockPath) {
 		return null
@@ -381,7 +394,7 @@ function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependenci
 		return null
 	}
 
-	const nameObjectHash = get(readFile(yarnLockPath), 'object', {}) as { [key: string]: { version: string } }
+	const nameObjectHash = readFile<{ object: { [key: string]: { version: string } } }>(yarnLockPath)?.object || {}
 	const nameVersionHash = mapValues(nameObjectHash, item => item.version)
 
 	return expectedDependencies.map(([name, expectedVersion]) => {
@@ -395,7 +408,7 @@ function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependenci
 			fp.join('node_modules', name, 'package.json'),
 			fp.dirname(yarnLockPath)
 		)
-		const actualVersion = modulePath ? get(readFile(modulePath), 'version') as unknown as string : undefined
+		const actualVersion = modulePath ? readFile<PackageJson>(modulePath)?.version : undefined
 
 		return {
 			name,
@@ -407,13 +420,15 @@ function getDependenciesFromYarnLock(packageJsonPath: string, expectedDependenci
 	})
 }
 
+/**
+ * @see https://yarnpkg.com/lang/en/docs/workspaces/
+ */
 function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string): boolean {
 	if (!packageJsonPath || !yarnLockPath) {
 		return false
 	}
 
-	// See https://yarnpkg.com/lang/en/docs/workspaces/
-	const packageJsonForYarnWorkspace = readFile(fp.join(fp.dirname(yarnLockPath), 'package.json')) as { private?: boolean, workspaces?: Array<string> }
+	const packageJsonForYarnWorkspace = readFile<PackageJson>(fp.join(fp.dirname(yarnLockPath), 'package.json'))
 	if (!packageJsonForYarnWorkspace || packageJsonForYarnWorkspace.private !== true || !packageJsonForYarnWorkspace.workspaces) {
 		return false
 	}
@@ -442,7 +457,7 @@ function findFileInParentDirectory(path: string, name: string, stop?: string): s
 	}
 }
 
-function readFile(filePath: string): object | string | null {
+function readFile<T>(filePath: string): T | null {
 	try {
 		const text = fs.readFileSync(filePath, 'utf-8')
 		if (fp.extname(filePath) === '.json') {
@@ -450,7 +465,7 @@ function readFile(filePath: string): object | string | null {
 		} else if (fp.basename(filePath) === 'yarn.lock') {
 			return yarn.parse(text)
 		}
-		return text
+		return text as any
 
 	} catch (error) {
 		return null
