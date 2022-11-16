@@ -163,7 +163,12 @@ type PackageJson = {
 	devDependencies?: Record<string, string>
 	peerDependencies?: Record<string, string>
 	bundledDependencies?: Record<string, string>
-	workspaces?: Array<string>
+
+	/**
+	 * @see https://classic.yarnpkg.com/lang/en/docs/workspaces/
+	 * @see https://classic.yarnpkg.com/blog/2018/02/15/nohoist/
+	 */
+	workspaces?: Array<string> | { packages?: Array<string>; nohoist?: Array<string> }
 }
 
 async function checkDependencies(
@@ -433,7 +438,11 @@ function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string): bool
 		return false
 	}
 
-	const yarnWorkspacePathList = (packageJsonForYarnWorkspace.workspaces || [])
+	const yarnWorkspacePathList = (
+		Array.isArray(packageJsonForYarnWorkspace.workspaces)
+			? packageJsonForYarnWorkspace.workspaces
+			: packageJsonForYarnWorkspace.workspaces.packages || []
+	)
 		.flatMap(pathOrGlob => glob(pathOrGlob, { cwd: fp.dirname(yarnLockPath), absolute: true }))
 		.map(path => path.replace(/\//g, fp.sep))
 	if (yarnWorkspacePathList.includes(fp.dirname(packageJsonPath))) {

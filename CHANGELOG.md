@@ -1,3 +1,6 @@
+### 0.2.1
+- Fix the error not supporting yarn `nohoist`.
+
 ### 0.2.0
 - Add support of `package-lock.json` version 3.
 - Amend information and error messages for better skimming.
