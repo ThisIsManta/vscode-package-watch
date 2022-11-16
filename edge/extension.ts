@@ -11,6 +11,7 @@ import mapValues from 'lodash/mapValues'
 import findLast from 'lodash/findLast'
 import debounce from 'lodash/debounce'
 import trim from 'lodash/trim'
+import isEqual from 'lodash/isEqual'
 import * as yarn from '@yarnpkg/lockfile'
 import glob from 'glob/sync'
 import validRange from 'semver/ranges/valid'
@@ -20,6 +21,7 @@ import satisfies from 'semver/functions/satisfies'
 let fileWatcher: vscode.FileSystemWatcher
 let outputChannel: vscode.OutputChannel
 let pendingOperation: vscode.CancellationTokenSource | null = null
+const recentProblems = new Map<Report['packageJsonPath'], Report>()
 
 class CheckingOperation extends vscode.CancellationTokenSource { }
 class InstallationOperation extends vscode.CancellationTokenSource { }
@@ -43,7 +45,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		queue.splice(0, queue.length)
 
 		try {
-			await checkDependencies(packageJsonPathList, token)
+			await checkDependencies(packageJsonPathList, token, true)
 
 		} catch (error) {
 			outputChannel.appendLine(String(error))
@@ -104,10 +106,10 @@ export async function activate(context: vscode.ExtensionContext) {
 		outputChannel.clear()
 
 		try {
-			const success = await checkDependencies(await getPackageJsonPathList(), token)
+			const success = await checkDependencies(await getPackageJsonPathList(), token, false)
 
 			if (success) {
-				vscode.window.showInformationMessage('Dependencies complete ✅')
+				vscode.window.showInformationMessage('Dependencies synced ✅')
 			}
 
 		} catch (error) {
@@ -145,16 +147,6 @@ async function getPackageJsonPathList() {
 	return (await vscode.workspace.findFiles('**/package.json', '**/node_modules/**')).map(link => link.fsPath)
 }
 
-type Report = {
-	packageJsonPath: string
-	problems: Array<{
-		packageName?: string
-		toString: () => string,
-		moduleCheckingNeeded?: boolean,
-		modulePathForCleaningUp?: string
-	}>
-}
-
 type PackageJson = {
 	name: string
 	version: string
@@ -174,9 +166,17 @@ type PackageJson = {
 async function checkDependencies(
 	packageJsonPathList: Array<string>,
 	token: vscode.CancellationToken,
+	recentProblemsIgnored: boolean,
 ) {
 	const reports = createReports(packageJsonPathList, token)
-	const problematicReports = reports.filter(report => report.problems.length > 0)
+	const problematicReports = reports.filter(report =>
+		report.problems.length > 0 &&
+		(!recentProblemsIgnored || !isEqual(recentProblems.get(report.packageJsonPath), report))
+	)
+
+	for (const report of reports) {
+		recentProblems.set(report.packageJsonPath, report)
+	}
 
 	if (token.isCancellationRequested) {
 		return
@@ -198,24 +198,15 @@ async function checkDependencies(
 		const containingCommonPath = getCommonPath(vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) || [])
 		const containingDirectoryName = fp.basename(containingCommonPath)
 		const parentCommonPath = containingCommonPath.substring(0, containingCommonPath.length - containingDirectoryName.length)
-		function getRelativePath(packageJsonPath: string) {
-			return trim(fp.dirname(packageJsonPath.substring(parentCommonPath.length)), fp.sep)
+		const optionalPackageLocation = totalPackageJsonCount > 1
+			? ': ' + problematicReports.map(report => trim(fp.dirname(report.packageJsonPath.substring(parentCommonPath.length)), fp.sep)).join(', ')
+			: ''
+
+		if (problematicReports.every(report => report.problems.every(problem => problem.type === 'dep-not-installed'))) {
+			return 'Dependencies not installed ❌' + optionalPackageLocation
 		}
 
-		if (problematicReports.length === 1) {
-			const packageLocation = totalPackageJsonCount > 1
-				? getRelativePath(problematicReports[0].packageJsonPath)
-				: ''
-			const colon = packageLocation ? ': ' : ''
-
-			if (problematicReports[0].problems.length === 1 && !problematicReports[0].problems[0].packageName) {
-				return problematicReports[0].problems[0].toString() + ' ❌' + colon + packageLocation
-			}
-
-			return problematicReports[0].problems.length + ' ' + (problematicReports[0].problems.length === 1 ? 'Dependency' : 'Dependencies') + ' outdated ❌' + colon + packageLocation
-		}
-
-		return 'Dependencies outdated ❌: ' + problematicReports.map(report => getRelativePath(report.packageJsonPath)).join(', ')
+		return 'Dependencies changed ❌' + optionalPackageLocation
 	})()
 
 	const options: Array<{ title: string, action: () => void }> = compact([
@@ -240,31 +231,42 @@ async function checkDependencies(
 	})
 }
 
+type Report = {
+	packageJsonPath: string
+	packageJsonHash: Record<PackageJson['name'], PackageJson['version']>
+	problems: Array<{
+		type: 'dep-not-installed' | 'dep-version-mismatched'
+		text: string
+		moduleCheckingNeeded?: boolean
+		modulePathForCleaningUp?: string
+	}>
+}
+
 function createReports(
 	packageJsonPathList: Array<string>,
 	token: vscode.CancellationToken,
 ): Array<Report> {
 	return compact(packageJsonPathList
 		.filter(packageJsonPath => fp.basename(packageJsonPath) === 'package.json')
-		.map((packageJsonPath): Report | undefined => {
+		.map((packageJsonPath): Report | null => {
 			if (token.isCancellationRequested) {
-				return
+				return null
 			}
 
-			const expectedDependencies: Array<[PackageJson['name'], PackageJson['version']]> = (() => {
-				const packageJson = readFile<PackageJson>(packageJsonPath)
-				return compact([
-					packageJson?.dependencies,
-					packageJson?.devDependencies,
-					packageJson?.peerDependencies,
-					// TODO: add 'bundledDependencies'
-				]).flatMap(item => Object.entries<PackageJson['version']>(item))
-			})()
+			const packageJson = readFile<PackageJson>(packageJsonPath)
+			const expectedDependencies: Array<[PackageJson['name'], PackageJson['version']]> = compact([
+				packageJson?.dependencies,
+				packageJson?.devDependencies,
+				packageJson?.peerDependencies,
+				// TODO: add 'bundledDependencies'
+			]).flatMap(item => Object.entries<PackageJson['version']>(item))
 
 			// Skip this file as there is no dependencies written in the file
 			if (expectedDependencies.length === 0) {
-				return
+				return null
 			}
+
+			const packageJsonHash = Object.fromEntries(expectedDependencies)
 
 			const dependencies = (
 				getDependenciesFromYarnLock(packageJsonPath, expectedDependencies) ||
@@ -273,8 +275,10 @@ function createReports(
 			if (!dependencies) {
 				return {
 					packageJsonPath,
+					packageJsonHash,
 					problems: [{
-						toString: () => 'No lockfile found'
+						type: 'dep-not-installed',
+						text: 'A lockfile was not found alongside the package.json file.',
 					}]
 				}
 			}
@@ -282,33 +286,36 @@ function createReports(
 			if (dependencies.every(item => item.actualVersion === undefined)) {
 				return {
 					packageJsonPath,
+					packageJsonHash,
 					problems: [{
-						toString: () => 'No dependencies installed'
+						type: 'dep-not-installed',
+						text: 'None of the dependencies are installed.'
 					}]
 				}
 			}
 
 			return {
 				packageJsonPath,
+				packageJsonHash,
 				problems: compact(dependencies.map(item => {
 					if (!item.lockedVersion || !item.actualVersion) {
 						return {
-							packageName: item.name,
-							toString: () => 'to be installed'
+							type: 'dep-not-installed',
+							text: `${item.name} not installed.`
 						}
 					}
 
 					if (validRange(item.expectedVersion) && validVersion(item.lockedVersion) && satisfies(item.lockedVersion, item.expectedVersion) === false) {
 						return {
-							packageName: item.name,
-							toString: () => `to be ${item.expectedVersion} but got ${item.lockedVersion} in lockfile`
+							type: 'dep-version-mismatched',
+							text: `${item.name} (${item.expectedVersion} ≠ ${item.lockedVersion} in the lockfile.)`
 						}
 					}
 
 					if (item.lockedVersion !== item.actualVersion) {
 						return {
-							packageName: item.name,
-							toString: () => `to be ${item.lockedVersion} but got ${item.actualVersion} in node_modules`,
+							type: 'dep-version-mismatched',
+							text: `${item.name} (${item.lockedVersion} ≠ ${item.actualVersion} in the node_modules.)`,
 							moduleCheckingNeeded: true,
 							modulePathForCleaningUp: item.path
 						}
@@ -331,7 +338,7 @@ function printReports(reports: Array<Report>, token: vscode.CancellationToken): 
 				return
 			}
 
-			outputChannel.appendLine('  ' + (problem.packageName ? `"${problem.packageName}": ` : '') + problem.toString())
+			outputChannel.appendLine('  ' + problem.text)
 		}
 	}
 }
@@ -497,7 +504,7 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 	}
 
 	if (vscode.workspace.workspaceFolders === undefined) {
-		vscode.window.showErrorMessage('No workspaces opened 🙄', { modal: true })
+		vscode.window.showErrorMessage('Workspaces not opened 🙄', { modal: true })
 		pendingOperation = null
 		return
 	}
@@ -511,12 +518,12 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 	}
 
 	if (packageJsonPathList.length === 0) {
-		vscode.window.showErrorMessage('No package.json found 🙄', { modal: true })
+		vscode.window.showErrorMessage('package.json not found 🙄', { modal: true })
 		pendingOperation = null
 		return
 	}
 
-	const success = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Dependencies being installed... 🚧', cancellable: true }, async (progress, progressToken) => {
+	const success = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing dependencies... 🚧', cancellable: true }, async (progress, progressToken) => {
 		progressToken.onCancellationRequested(() => {
 			if (token === pendingOperation?.token) {
 				pendingOperation.cancel()
@@ -666,9 +673,9 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 
 	if (problematicReports.length > 0) {
 		vscode.window.showWarningMessage(
-			'Dependencies not installed correctly 💥',
+			'Error installing dependencies 💥',
 			{
-				title: 'Force Install',
+				title: 'Clean Install',
 				action: () => {
 					installDependencies(problematicReports, true)
 				}
@@ -686,7 +693,7 @@ async function installDependencies(reports: Array<Report> = [], secondTry = fals
 		})
 
 	} else {
-		vscode.window.showInformationMessage('Dependencies complete ✅')
+		vscode.window.showInformationMessage('Dependencies synced ✅')
 	}
 }
 
