@@ -1,5 +1,6 @@
 ### 0.2.1
 - Fix the error not supporting yarn `nohoist`.
+- Fix the error not recognizing yarn workspace symbolic links.
 - Fix reporting the same problems unless the command is explicitly called.
 - Amend information and error messages for better skimming.
 

@@ -306,26 +306,37 @@ function createReports(
 				packageJsonPath,
 				packageJsonHash,
 				problems: compact(dependencies.map(item => {
-					if (!item.lockedVersion || !item.actualVersion) {
+					if (!item.actualVersion || !validVersion(item.actualVersion)) {
 						return {
 							type: 'dep-not-installed',
 							text: `${item.name} not installed.`
 						}
 					}
 
-					if (validRange(item.expectedVersion) && validVersion(item.lockedVersion) && satisfies(item.lockedVersion, item.expectedVersion) === false) {
+					if (!validRange(item.expectedVersion)) {
+						return
+					}
+
+					if (item.lockedVersion && validVersion(item.lockedVersion) && !satisfies(item.lockedVersion, item.expectedVersion)) {
 						return {
 							type: 'dep-version-mismatched',
-							text: `${item.name} (${item.expectedVersion} ≠ ${item.lockedVersion} in the lockfile.)`
+							text: `${item.name} ${item.expectedVersion} ≠ ${item.lockedVersion} in the lockfile.`
 						}
 					}
 
-					if (item.lockedVersion !== item.actualVersion) {
+					if (item.lockedVersion && item.lockedVersion !== item.actualVersion) {
 						return {
 							type: 'dep-version-mismatched',
-							text: `${item.name} (${item.lockedVersion} ≠ ${item.actualVersion} in the node_modules.)`,
+							text: `${item.name} ${item.lockedVersion} in the lockfile ≠ ${item.actualVersion} in the node_modules.`,
 							moduleCheckingNeeded: true,
 							modulePathForCleaningUp: item.path
+						}
+					}
+
+					if (!satisfies(item.actualVersion, item.expectedVersion)) {
+						return {
+							type: 'dep-version-mismatched',
+							text: `${item.name} ${item.expectedVersion} ≠ ${item.actualVersion} in the node_modules.`,
 						}
 					}
 				}))
@@ -467,16 +478,24 @@ function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string): bool
 	return false
 }
 
-function findFileInParentDirectory(path: string, name: string, stop?: string): string | undefined {
+function findFileInParentDirectory(
+	path: string,
+	name: string,
+	stopPath?: string,
+): string | undefined {
 	const pathList = path.split(fp.sep)
 	while (pathList.length > 1) {
-		const workPath = [...pathList, name].join(fp.sep)
-		if (stop && workPath.startsWith(stop) === false) {
+		const workPath = fp.join(...pathList, name)
+
+		if (stopPath && workPath.startsWith(stopPath) === false) {
 			break
 		}
-		if (fs.existsSync(workPath)) {
+
+		const fileStat = fs.lstatSync(workPath, { throwIfNoEntry: false })
+		if (fileStat?.isFile()) {
 			return workPath
 		}
+
 		pathList.pop()
 	}
 }
