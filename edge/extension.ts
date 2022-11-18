@@ -147,6 +147,14 @@ async function getPackageJsonPathList() {
 	return (await vscode.workspace.findFiles('**/package.json', '**/node_modules/**')).map(link => link.fsPath)
 }
 
+type Dependency = {
+	name: string
+	path: string | undefined
+	expectedVersion: string
+	lockedVersion: string | undefined
+	actualVersion: string | undefined
+}
+
 type PackageJson = {
 	name: string
 	version: string
@@ -268,7 +276,7 @@ function createReports(
 
 			const packageJsonHash = Object.fromEntries(expectedDependencies)
 
-			const dependencies = (
+			const dependencies: Array<Dependency> | null = (
 				getDependenciesFromYarnLock(packageJsonPath, expectedDependencies) ||
 				getDependenciesFromPackageLock(packageJsonPath, expectedDependencies)
 			)
@@ -346,13 +354,13 @@ function printReports(reports: Array<Report>, token: vscode.CancellationToken): 
 function getDependenciesFromPackageLock(
 	packageJsonPath: string,
 	expectedDependencies: Array<[PackageJson['name'], PackageJson['version']]>,
-) {
+): Array<Dependency> | null {
 	const packageLockPath = fp.join(fp.dirname(packageJsonPath), 'package-lock.json')
-	const packageLockFile = readFile(packageLockPath) as {
+	const packageLockFile = readFile<{
 		lockfileVersion?: number
 		packages?: Record<string, { version: string }>
 		dependencies?: Record<string, { version: string }>
-	}
+	}>(packageLockPath)
 
 	if (packageLockFile === null) {
 		return null
@@ -395,7 +403,7 @@ function getDependenciesFromPackageLock(
 function getDependenciesFromYarnLock(
 	packageJsonPath: string,
 	expectedDependencies: Array<[PackageJson['name'], PackageJson['version']]>,
-) {
+): Array<Dependency> | null {
 	const yarnLockPath = findFileInParentDirectory(fp.dirname(packageJsonPath), 'yarn.lock')
 	if (!yarnLockPath) {
 		return null
@@ -410,7 +418,7 @@ function getDependenciesFromYarnLock(
 	const nameVersionHash = mapValues(nameObjectHash, item => item.version)
 
 	return expectedDependencies.map(([name, expectedVersion]) => {
-		let lockedVersion = (
+		const lockedVersion = (
 			nameVersionHash[name + '@' + expectedVersion] ||
 			findLast(nameVersionHash, (version, nameAtVersion) => nameAtVersion.startsWith(name + '@'))
 		)
