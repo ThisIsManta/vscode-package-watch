@@ -1,3 +1,6 @@
+### 0.3.0
+- Add ability to ignore missing dependencies for the startup check.
+
 ### 0.2.1
 - Fix the error not supporting yarn `nohoist`.
 - Fix the error not recognizing yarn workspace symbolic links.

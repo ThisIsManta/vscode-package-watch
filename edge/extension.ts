@@ -29,6 +29,8 @@ class InstallationOperation extends vscode.CancellationTokenSource { }
 export async function activate(context: vscode.ExtensionContext) {
 	outputChannel = vscode.window.createOutputChannel('Package Watch')
 
+	const manualIgnoreList = new PersistentPackageJsonList(context)
+
 	const queue: Array<string> = []
 	const defer = debounce(async () => {
 		if (pendingOperation) {
@@ -45,7 +47,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		queue.splice(0, queue.length)
 
 		try {
-			await checkDependencies(packageJsonPathList, token, true)
+			await checkDependencies(packageJsonPathList, token, true, manualIgnoreList)
 
 		} catch (error) {
 			outputChannel.appendLine(String(error))
@@ -106,7 +108,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		outputChannel.clear()
 
 		try {
-			const success = await checkDependencies(await getPackageJsonPathList(), token, false)
+			const success = await checkDependencies(await getPackageJsonPathList(), token, false, null)
 
 			if (success) {
 				vscode.window.showInformationMessage('Dependencies synced ✅')
@@ -175,15 +177,23 @@ async function checkDependencies(
 	packageJsonPathList: Array<string>,
 	token: vscode.CancellationToken,
 	recentProblemsIgnored: boolean,
+	manualIgnoreList: PersistentPackageJsonList | null,
 ) {
 	const reports = createReports(packageJsonPathList, token)
 	const problematicReports = reports.filter(report =>
 		report.problems.length > 0 &&
-		(!recentProblemsIgnored || !isEqual(recentProblems.get(report.packageJsonPath), report))
+		(!recentProblemsIgnored || !isEqual(recentProblems.get(report.packageJsonPath), report)) &&
+		(!manualIgnoreList || !manualIgnoreList.has(report))
 	)
 
 	for (const report of reports) {
 		recentProblems.set(report.packageJsonPath, report)
+	}
+
+	if (manualIgnoreList) {
+		for (const report of problematicReports) {
+			await manualIgnoreList.remove(report.packageJsonPath)
+		}
 	}
 
 	if (token.isCancellationRequested) {
@@ -222,6 +232,12 @@ async function checkDependencies(
 			title: 'Install',
 			action: () => {
 				installDependencies(reports)
+			}
+		},
+		manualIgnoreList && problematicReports.every(report => report.problems.every(problem => problem.type === 'dep-not-installed')) && {
+			title: 'Ignore',
+			action: () => {
+				manualIgnoreList.add(...problematicReports)
 			}
 		},
 		{
@@ -740,4 +756,30 @@ function getCommonPath(pathList: Array<string>): string {
 		}
 	}
 	return fp.join(...commonPath)
+}
+
+class PersistentPackageJsonList {
+	private static key = 'SkipList:'
+	private state: vscode.Memento
+
+	constructor(context: vscode.ExtensionContext) {
+		this.state = context.workspaceState
+	}
+
+	has(report: Pick<Report, 'packageJsonPath' | 'packageJsonHash'>): boolean {
+		const value = this.state.get<Report['packageJsonHash']>(PersistentPackageJsonList.key + report.packageJsonPath)
+		return !!value && isEqual(value, report.packageJsonHash)
+	}
+
+	async add(...reports: Array<Pick<Report, 'packageJsonPath' | 'packageJsonHash'>>) {
+		for (const { packageJsonPath, packageJsonHash } of reports) {
+			await this.state.update(PersistentPackageJsonList.key + packageJsonPath, packageJsonHash)
+		}
+	}
+
+	async remove(...packageJsonPathList: Array<Report['packageJsonPath']>) {
+		for (const packageJsonPath of packageJsonPathList) {
+			await this.state.update(PersistentPackageJsonList.key + packageJsonPath, undefined)
+		}
+	}
 }
