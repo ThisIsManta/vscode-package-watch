@@ -63,7 +63,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		if (queue.length > 0) {
 			defer()
 		}
-	}, 300)
+	}, 1500)
 	const batch = (path: string | Array<string>) => {
 		if (pendingOperation instanceof InstallationOperation) {
 			return
