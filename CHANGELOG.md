@@ -1,3 +1,6 @@
+### 0.4.0
+- Fix blocking start-up time.
+
 ### 0.3.0
 - Add ability to ignore missing dependencies for the startup check.
 

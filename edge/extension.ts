@@ -1,5 +1,7 @@
-import * as fs from 'fs'
-import { removeSync } from 'fs-extra/lib/remove'
+import * as fs from 'fs/promises'
+// @ts-ignore
+import { remove, pathExists } from 'fs-extra/esm'
+import converge from 'p-map'
 import * as fp from 'path'
 import * as cp from 'child_process'
 import * as vscode from 'vscode'
@@ -83,6 +85,12 @@ export async function activate(context: vscode.ExtensionContext) {
 			await checkDependencies(packageJsonPathList, token, true)
 
 		} catch (error) {
+			if (error instanceof AbortError) {
+				outputChannel.clear()
+
+				return
+			}
+
 			outputChannel.appendLine(String(error))
 
 			vscode.window.showErrorMessage(String(error))
@@ -121,13 +129,21 @@ export async function activate(context: vscode.ExtensionContext) {
 		outputChannel.clear()
 
 		try {
+			console.time('checkDependencies')
 			const success = await checkDependencies(await getPackageJsonPathList(), token, false)
+			console.timeEnd('checkDependencies')
 
 			if (success) {
 				vscode.window.showInformationMessage('Dependencies synced ✅')
 			}
 
 		} catch (error) {
+			if (error instanceof AbortError) {
+				outputChannel.clear()
+
+				return
+			}
+
 			outputChannel.appendLine(String(error))
 
 			throw error
@@ -139,7 +155,33 @@ export async function activate(context: vscode.ExtensionContext) {
 		}
 	}))
 
-	context.subscriptions.push(vscode.commands.registerCommand('packageWatch.installDependencies', installDependencies))
+	context.subscriptions.push(vscode.commands.registerCommand('packageWatch.installDependencies', async (reports: Array<Report> = [], secondTry = false) => {
+		if (pendingOperation instanceof CheckingOperation) {
+			pendingOperation.cancel()
+		} else if (pendingOperation instanceof InstallationOperation) {
+			return
+		}
+		pendingOperation = new InstallationOperation()
+		const token = pendingOperation.token
+
+		try {
+			await installDependencies(reports, token, secondTry)
+
+		} catch (error) {
+			if (error instanceof AbortError) {
+				outputChannel.clear()
+
+				return
+			}
+
+			throw error
+
+		} finally {
+			if (token === pendingOperation.token) {
+				pendingOperation = null
+			}
+		}
+	}))
 
 	batch(await getPackageJsonPathList())
 
@@ -170,7 +212,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		token: vscode.CancellationToken,
 		newChangesOnly: boolean,
 	) {
-		const reports = createReports(packageJsonPathList, token)
+		const reports = await createReports(packageJsonPathList, token)
 		const problematicReports = reports.filter(report =>
 			report.problems.length > 0 &&
 			// Do not alert the ignored problems unless they are changed
@@ -182,7 +224,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		}
 
 		if (token.isCancellationRequested) {
-			return
+			throw new AbortError()
 		}
 
 		if (problematicReports.length === 0) {
@@ -192,7 +234,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		printReports(problematicReports, token)
 
 		if (token.isCancellationRequested) {
-			return
+			throw new AbortError()
 		}
 
 		const totalPackageJsonCount = (await getPackageJsonPathList()).length
@@ -216,7 +258,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			{
 				title: 'Install',
 				action: () => {
-					installDependencies(reports)
+					vscode.commands.executeCommand('packageWatch.installDependencies')
 				}
 			},
 			newChangesOnly && problematicReports.every(report => report.problems.every(problem => problem.type === 'dep-not-installed')) && {
@@ -243,14 +285,14 @@ export async function activate(context: vscode.ExtensionContext) {
 	function printReports(reports: Array<Report>, token: vscode.CancellationToken): void {
 		for (const { packageJsonPath, problems } of reports) {
 			if (token.isCancellationRequested) {
-				return
+				throw new AbortError()
 			}
 
 			outputChannel.appendLine('')
 			outputChannel.appendLine(packageJsonPath)
 			for (const problem of problems) {
 				if (token.isCancellationRequested) {
-					return
+					throw new AbortError()
 				}
 
 				outputChannel.appendLine('  ' + problem.text)
@@ -258,24 +300,19 @@ export async function activate(context: vscode.ExtensionContext) {
 		}
 	}
 
-	async function installDependencies(reports: Array<Report> = [], secondTry = false) {
-		if (pendingOperation instanceof CheckingOperation) {
-			pendingOperation.cancel()
-		} else if (pendingOperation instanceof InstallationOperation) {
-			return
-		}
-		pendingOperation = new InstallationOperation()
-		const token = pendingOperation.token
-
+	async function installDependencies(
+		reports: Array<Report>,
+		token: vscode.CancellationToken,
+		secondTry: boolean
+	) {
 		outputChannel.clear()
 
 		if (token.isCancellationRequested) {
-			return
+			throw new AbortError()
 		}
 
 		if (vscode.workspace.workspaceFolders === undefined) {
 			vscode.window.showErrorMessage('Workspaces not opened 🙄', { modal: true })
-			pendingOperation = null
 			return
 		}
 
@@ -284,20 +321,22 @@ export async function activate(context: vscode.ExtensionContext) {
 			: reports.map(report => report.packageJsonPath)
 
 		if (token.isCancellationRequested) {
-			return
+			throw new AbortError()
 		}
 
 		if (packageJsonPathList.length === 0) {
 			vscode.window.showErrorMessage('package.json not found 🙄', { modal: true })
-			pendingOperation = null
 			return
 		}
 
-		const success = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing dependencies... 🚧', cancellable: true }, async (progress, progressToken) => {
+		const success = await vscode.window.withProgress({
+			title: 'Installing dependencies... 🚧',
+			location: vscode.ProgressLocation.Notification,
+			cancellable: true,
+		}, async (progress, progressToken) => {
 			progressToken.onCancellationRequested(() => {
 				if (token === pendingOperation?.token) {
 					pendingOperation.cancel()
-					pendingOperation = null
 				}
 			})
 
@@ -305,13 +344,17 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			// Remove the problematic modules from /node_module/ so `--check-files` will work
 			for (const problem of problems) {
+				if (token.isCancellationRequested) {
+					throw new AbortError()
+				}
+
 				if (
 					problem.modulePathForCleaningUp &&
-					fs.existsSync(problem.modulePathForCleaningUp) &&
+					await pathExists(problem.modulePathForCleaningUp) &&
 					fp.basename(fp.dirname(problem.modulePathForCleaningUp)) === 'node_modules'
 				) {
 					try {
-						removeSync(problem.modulePathForCleaningUp)
+						await remove(problem.modulePathForCleaningUp)
 					} catch (error) {
 						// Do nothing
 					}
@@ -320,36 +363,32 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			const moduleCheckingNeeded = problems.some(problem => problem.moduleCheckingNeeded)
 
-			const totalCommands = compact(
-				packageJsonPathList
-					.map(packageJsonPath => {
-						if (token.isCancellationRequested) {
-							return
-						}
+			const totalCommands = await converge(packageJsonPathList, async (packageJsonPath): Promise<{ command: string, parameters: Array<string>, directory: string, packageJsonPath: string }> => {
+				if (token.isCancellationRequested) {
+					throw new AbortError()
+				}
 
-						const yarnLockPath = findFileInParentDirectory(fp.dirname(packageJsonPath), 'yarn.lock')
-						if (
-							fs.existsSync(fp.join(fp.dirname(packageJsonPath), 'yarn.lock')) ||
-							yarnLockPath && checkYarnWorkspace(packageJsonPath, yarnLockPath) ||
-							cp.spawnSync('which', ['yarn']).status === 0 && fs.existsSync(fp.join(fp.dirname(packageJsonPath), 'package-lock.json')) === false
-						) {
-							return {
-								command: 'yarn install',
-								parameters: [(moduleCheckingNeeded || secondTry) && '--check-files', secondTry && '--force'],
-								directory: fp.dirname(yarnLockPath || packageJsonPath),
-								packageJsonPath,
-							}
+				const yarnLockPath = await findFileInParentDirectory(fp.dirname(packageJsonPath), 'yarn.lock')
+				if (
+					await pathExists(fp.join(fp.dirname(packageJsonPath), 'yarn.lock')) ||
+					yarnLockPath && await checkYarnWorkspace(packageJsonPath, yarnLockPath) ||
+					cp.spawnSync('which', ['yarn']).status === 0 && await pathExists(fp.join(fp.dirname(packageJsonPath), 'package-lock.json')) === false
+				) {
+					return {
+						command: 'yarn install',
+						parameters: compact([(moduleCheckingNeeded || secondTry) && '--check-files', secondTry && '--force']),
+						directory: fp.dirname(yarnLockPath || packageJsonPath),
+						packageJsonPath,
+					}
+				}
 
-						} else {
-							return {
-								command: 'npm install',
-								parameters: [secondTry && '--force'],
-								directory: fp.dirname(packageJsonPath),
-								packageJsonPath,
-							}
-						}
-					})
-			).map(item => ({ ...item, parameters: compact(item.parameters) }))
+				return {
+					command: 'npm install',
+					parameters: compact([secondTry && '--force']),
+					directory: fp.dirname(packageJsonPath),
+					packageJsonPath,
+				}
+			}, { concurrency: 1 })
 
 			const uniqueCommands = uniqBy(totalCommands, ({ directory }) => directory)
 			const sortedCommands = sortBy(uniqueCommands, ({ directory }) => directory.length)
@@ -358,7 +397,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			for (const { command, parameters, directory, packageJsonPath } of sortedCommands) {
 				if (token.isCancellationRequested) {
-					return
+					throw new AbortError()
 				}
 
 				outputChannel.appendLine('')
@@ -396,7 +435,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				})
 
 				if (token.isCancellationRequested) {
-					return
+					throw new AbortError()
 				}
 
 				if (exitCode !== 0) {
@@ -420,12 +459,8 @@ export async function activate(context: vscode.ExtensionContext) {
 			return true
 		})
 
-		if (token === pendingOperation.token) {
-			pendingOperation = null
-		}
-
 		if (token.isCancellationRequested) {
-			return
+			throw new AbortError()
 		}
 
 		if (!success) {
@@ -436,7 +471,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			return
 		}
 
-		const verifiedReports = createReports(packageJsonPathList, token)
+		const verifiedReports = await createReports(packageJsonPathList, token)
 		const problematicReports = verifiedReports.filter(review => review.problems.length > 0)
 
 		printReports(problematicReports, token)
@@ -447,7 +482,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				{
 					title: 'Clean Install',
 					action: () => {
-						installDependencies(problematicReports, true)
+						vscode.commands.executeCommand('packageWatch.installDependencies', problematicReports, true)
 					}
 				},
 				{
@@ -472,106 +507,108 @@ async function getPackageJsonPathList() {
 	return (await vscode.workspace.findFiles('**/package.json', '**/node_modules/**')).map(link => link.fsPath)
 }
 
-function createReports(
-	packageJsonPathList: Array<string>,
+async function createReports(
+	pathList: Array<string>,
 	token: vscode.CancellationToken,
-): Array<Report> {
-	return compact(packageJsonPathList
-		.filter(packageJsonPath => fp.basename(packageJsonPath) === 'package.json')
-		.map((packageJsonPath): Report | null => {
-			if (token.isCancellationRequested) {
-				return null
-			}
+): Promise<Array<Report>> {
+	const packageJsonPathList = pathList.filter(packageJsonPath => fp.basename(packageJsonPath) === 'package.json')
 
-			const packageJson = readFile<PackageJson>(packageJsonPath)
-			const expectedDependencies: Array<[PackageJson['name'], PackageJson['version']]> = compact([
-				packageJson?.dependencies,
-				packageJson?.devDependencies,
-				packageJson?.peerDependencies,
-				// TODO: add 'bundledDependencies'
-			]).flatMap(item => Object.entries<PackageJson['version']>(item))
+	const reports = await converge(packageJsonPathList, async (packageJsonPath): Promise<Report | null> => {
+		if (token.isCancellationRequested) {
+			throw new AbortError()
+		}
 
-			// Skip this file as there is no dependencies written in the file
-			if (expectedDependencies.length === 0) {
-				return null
-			}
+		const packageJson = await readFile<PackageJson>(packageJsonPath)
+		const expectedDependencies: Array<[PackageJson['name'], PackageJson['version']]> = compact([
+			packageJson?.dependencies,
+			packageJson?.devDependencies,
+			packageJson?.peerDependencies,
+			// TODO: add 'bundledDependencies'
+		]).flatMap(item => Object.entries<PackageJson['version']>(item))
 
-			const packageJsonHash = Object.fromEntries(expectedDependencies)
+		// Skip this file as there is no dependencies written in the file
+		if (expectedDependencies.length === 0) {
+			return null
+		}
 
-			const dependencies: Array<Dependency> | null = (
-				getDependenciesFromYarnLock(packageJsonPath, expectedDependencies) ||
-				getDependenciesFromPackageLock(packageJsonPath, expectedDependencies)
-			)
-			if (!dependencies) {
-				return {
-					packageJsonPath,
-					packageJsonHash,
-					problems: [{
-						type: 'dep-not-installed',
-						text: 'A lockfile was not found alongside the package.json file.',
-					}]
-				}
-			}
+		const packageJsonHash = Object.fromEntries(expectedDependencies)
 
-			if (dependencies.every(item => item.actualVersion === undefined)) {
-				return {
-					packageJsonPath,
-					packageJsonHash,
-					problems: [{
-						type: 'dep-not-installed',
-						text: 'None of the dependencies are installed.'
-					}]
-				}
-			}
-
+		const dependencies: Array<Dependency> | null = (
+			await getDependenciesFromYarnLock(packageJsonPath, expectedDependencies) ||
+			await getDependenciesFromPackageLock(packageJsonPath, expectedDependencies)
+		)
+		if (!dependencies) {
 			return {
 				packageJsonPath,
 				packageJsonHash,
-				problems: compact(dependencies.map(item => {
-					if (!item.actualVersion || !validVersion(item.actualVersion)) {
-						return {
-							type: 'dep-not-installed',
-							text: `${item.name} not installed.`
-						}
-					}
-
-					if (!validRange(item.expectedVersion)) {
-						return
-					}
-
-					if (item.lockedVersion && validVersion(item.lockedVersion) && !satisfies(item.lockedVersion, item.expectedVersion)) {
-						return {
-							type: 'dep-version-mismatched',
-							text: `${item.name} ${item.expectedVersion} ≠ ${item.lockedVersion} in the lockfile.`
-						}
-					}
-
-					if (item.lockedVersion && item.lockedVersion !== item.actualVersion) {
-						return {
-							type: 'dep-version-mismatched',
-							text: `${item.name} ${item.lockedVersion} in the lockfile ≠ ${item.actualVersion} in the node_modules.`,
-							moduleCheckingNeeded: true,
-							modulePathForCleaningUp: item.path
-						}
-					}
-
-					if (!satisfies(item.actualVersion, item.expectedVersion)) {
-						return {
-							type: 'dep-version-mismatched',
-							text: `${item.name} ${item.expectedVersion} ≠ ${item.actualVersion} in the node_modules.`,
-						}
-					}
-				}))
+				problems: [{
+					type: 'dep-not-installed',
+					text: 'A lockfile was not found alongside the package.json file.',
+				}]
 			}
-		}))
+		}
+
+		if (dependencies.every(item => item.actualVersion === undefined)) {
+			return {
+				packageJsonPath,
+				packageJsonHash,
+				problems: [{
+					type: 'dep-not-installed',
+					text: 'None of the dependencies are installed.'
+				}]
+			}
+		}
+
+		return {
+			packageJsonPath,
+			packageJsonHash,
+			problems: compact(dependencies.map(item => {
+				if (!item.actualVersion || !validVersion(item.actualVersion)) {
+					return {
+						type: 'dep-not-installed',
+						text: `${item.name} not installed.`
+					}
+				}
+
+				if (!validRange(item.expectedVersion)) {
+					return
+				}
+
+				if (item.lockedVersion && validVersion(item.lockedVersion) && !satisfies(item.lockedVersion, item.expectedVersion)) {
+					return {
+						type: 'dep-version-mismatched',
+						text: `${item.name} ${item.expectedVersion} ≠ ${item.lockedVersion} in the lockfile.`
+					}
+				}
+
+				if (item.lockedVersion && item.lockedVersion !== item.actualVersion) {
+					return {
+						type: 'dep-version-mismatched',
+						text: `${item.name} ${item.lockedVersion} in the lockfile ≠ ${item.actualVersion} in the node_modules.`,
+						moduleCheckingNeeded: true,
+						modulePathForCleaningUp: item.path
+					}
+				}
+
+				if (!satisfies(item.actualVersion, item.expectedVersion)) {
+					return {
+						type: 'dep-version-mismatched',
+						text: `${item.name} ${item.expectedVersion} ≠ ${item.actualVersion} in the node_modules.`,
+					}
+				}
+			}))
+		}
+	}, { concurrency: 1 })
+
+	return compact(reports)
 }
 
-function getDependenciesFromPackageLock(
+async function getDependenciesFromPackageLock(
 	packageJsonPath: string,
 	expectedDependencies: Array<[PackageJson['name'], PackageJson['version']]>,
-): Array<Dependency> | null {
+): Promise<Array<Dependency> | null> {
 	const packageLockPath = fp.join(fp.dirname(packageJsonPath), 'package-lock.json')
-	const packageLockFile = readFile<{
+	const packageLockFile = await readFile<{
 		lockfileVersion?: number
 		packages?: Record<string, { version: string }>
 		dependencies?: Record<string, { version: string }>
@@ -599,11 +636,11 @@ function getDependenciesFromPackageLock(
 		throw new Error(`Could not find neither "packages" nor "dependencies" field in ${packageLockPath}`)
 	})()
 
-	return expectedDependencies.map(([name, expectedVersion]): Dependency => {
+	return converge(expectedDependencies, async ([name, expectedVersion]): Promise<Dependency> => {
 		const lockedVersion = nameVersionHash[name]
 
 		const modulePath = fp.join(fp.dirname(packageJsonPath), 'node_modules', name, 'package.json')
-		const actualVersion = readFile<PackageJson>(modulePath)?.version
+		const actualVersion = (await readFile<PackageJson>(modulePath))?.version
 
 		return {
 			name,
@@ -612,38 +649,40 @@ function getDependenciesFromPackageLock(
 			lockedVersion,
 			actualVersion,
 		}
-	})
+	}, { concurrency: 20 })
 }
 
-function getDependenciesFromYarnLock(
+async function getDependenciesFromYarnLock(
 	packageJsonPath: string,
 	expectedDependencies: Array<[PackageJson['name'], PackageJson['version']]>,
-): Array<Dependency> | null {
-	const yarnLockPath = findFileInParentDirectory(fp.dirname(packageJsonPath), 'yarn.lock')
+): Promise<Array<Dependency> | null> {
+	const findFileInParentDirectoryMemoized = findFileInParentDirectory // memoize(findFileInParentDirectory, (path, name, stopPath) => path + '|' + name + '|' + (stopPath || ''))
+
+	const yarnLockPath = await findFileInParentDirectoryMemoized(fp.dirname(packageJsonPath), 'yarn.lock')
 	if (!yarnLockPath) {
 		return null
 	}
 
 	// Stop processing if the current directory is not part of the Yarn Workspace
-	if (fp.dirname(yarnLockPath) !== fp.dirname(packageJsonPath) && !checkYarnWorkspace(packageJsonPath, yarnLockPath)) {
+	if (fp.dirname(yarnLockPath) !== fp.dirname(packageJsonPath) && await checkYarnWorkspace(packageJsonPath, yarnLockPath) === false) {
 		return null
 	}
 
-	const nameObjectHash = readFile<{ object: { [key: string]: { version: string } } }>(yarnLockPath)?.object || {}
+	const nameObjectHash = (await readFile<{ object: { [key: string]: { version: string } } }>(yarnLockPath))?.object || {}
 	const nameVersionHash = mapValues(nameObjectHash, item => item.version)
 
-	return expectedDependencies.map(([name, expectedVersion]): Dependency => {
+	return converge(expectedDependencies, async ([name, expectedVersion]): Promise<Dependency> => {
 		const lockedVersion = (
 			nameVersionHash[name + '@' + expectedVersion] ||
 			findLast(nameVersionHash, (version, nameAtVersion) => nameAtVersion.startsWith(name + '@'))
 		)
 
-		const modulePath = findFileInParentDirectory(
+		const modulePath = await findFileInParentDirectoryMemoized(
 			fp.dirname(packageJsonPath),
 			fp.join('node_modules', name, 'package.json'),
 			fp.dirname(yarnLockPath)
 		)
-		const actualVersion = modulePath ? readFile<PackageJson>(modulePath)?.version : undefined
+		const actualVersion = modulePath ? (await readFile<PackageJson>(modulePath))?.version : undefined
 
 		return {
 			name,
@@ -652,18 +691,18 @@ function getDependenciesFromYarnLock(
 			lockedVersion,
 			actualVersion,
 		}
-	})
+	}, { concurrency: 20 })
 }
 
 /**
  * @see https://yarnpkg.com/lang/en/docs/workspaces/
  */
-function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string): boolean {
+async function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string): Promise<boolean> {
 	if (!packageJsonPath || !yarnLockPath) {
 		return false
 	}
 
-	const packageJson = readFile<PackageJson>(fp.join(fp.dirname(yarnLockPath), 'package.json'))
+	const packageJson = await readFile<PackageJson>(fp.join(fp.dirname(yarnLockPath), 'package.json'))
 	if (!packageJson || packageJson.private !== true || !packageJson.workspaces) {
 		return false
 	}
@@ -682,11 +721,11 @@ function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string): bool
 	return false
 }
 
-function findFileInParentDirectory(
+async function findFileInParentDirectory(
 	path: string,
 	name: string,
 	stopPath?: string,
-): string | undefined {
+): Promise<string | undefined> {
 	const pathList = path.split(fp.sep)
 	while (pathList.length > 1) {
 		const workPath = fp.join(...pathList, name)
@@ -695,18 +734,22 @@ function findFileInParentDirectory(
 			break
 		}
 
-		const fileStat = fs.lstatSync(workPath, { throwIfNoEntry: false })
-		if (fileStat?.isFile()) {
-			return workPath
+		try {
+			const fileStat = await fs.lstat(workPath)
+			if (fileStat?.isFile()) {
+				return workPath
+			}
+		} catch {
+			// Continue the while loop
 		}
 
 		pathList.pop()
 	}
 }
 
-function readFile<T>(filePath: string): T | null {
+async function readFile<T>(filePath: string): Promise<T | null> {
 	try {
-		const text = fs.readFileSync(filePath, 'utf-8')
+		const text = await fs.readFile(filePath, 'utf-8')
 		if (fp.extname(filePath) === '.json') {
 			return JSON.parse(text)
 		} else if (fp.basename(filePath) === 'yarn.lock') {
@@ -762,3 +805,5 @@ class PersistentPackageJsonList {
 		}
 	}
 }
+
+class AbortError { }
