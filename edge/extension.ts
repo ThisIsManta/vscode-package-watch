@@ -1,6 +1,4 @@
 import * as fs from 'fs/promises'
-// @ts-ignore
-import { remove, pathExists } from 'fs-extra/esm'
 import converge from 'p-map'
 import * as fp from 'path'
 import * as cp from 'child_process'
@@ -15,7 +13,7 @@ import debounce from 'lodash/debounce'
 import trim from 'lodash/trim'
 import isEqual from 'lodash/isEqual'
 import * as yarn from '@yarnpkg/lockfile'
-import glob from 'glob/sync'
+import { globSync } from 'glob'
 import validRange from 'semver/ranges/valid'
 import validVersion from 'semver/functions/valid'
 import satisfies from 'semver/functions/satisfies'
@@ -354,7 +352,7 @@ export async function activate(context: vscode.ExtensionContext) {
 					fp.basename(fp.dirname(problem.modulePathForCleaningUp)) === 'node_modules'
 				) {
 					try {
-						await remove(problem.modulePathForCleaningUp)
+						await fs.rm(problem.modulePathForCleaningUp, { recursive: true, force: true })
 					} catch (error) {
 						// Do nothing
 					}
@@ -712,7 +710,7 @@ async function checkYarnWorkspace(packageJsonPath: string, yarnLockPath: string)
 			? packageJson.workspaces
 			: packageJson.workspaces.packages || []
 	)
-		.flatMap(pathOrGlob => glob(pathOrGlob, { cwd: fp.dirname(yarnLockPath), absolute: true }))
+		.flatMap(pathOrGlob => globSync(pathOrGlob, { cwd: fp.dirname(yarnLockPath), absolute: true }))
 		.map(path => path.replace(/\//g, fp.sep))
 	if (yarnWorkspacePathList.includes(fp.dirname(packageJsonPath))) {
 		return true
@@ -807,3 +805,12 @@ class PersistentPackageJsonList {
 }
 
 class AbortError { }
+
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await fs.access(path)
+		return true
+	} catch {
+		return false
+	}
+}
